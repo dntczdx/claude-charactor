@@ -63,6 +63,7 @@ final class PetController: NSObject {
         do {
             try s.start()
             server = s
+            Log.info("启动 v\(Self.version) 端口 \(Settings.shared.port) 辅助功能=\(bridge.isTrusted)")
         } catch {
             NSLog("[ClaudeGirl] 事件服务器启动失败: %@", String(describing: error))
         }
@@ -112,6 +113,7 @@ final class PetController: NSObject {
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
         linkToForegroundConversation(c)
+        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-")")
         cancelAXFallback()
         bump(c)
         recompute()
@@ -149,15 +151,18 @@ final class PetController: NSObject {
     /// MCP 长轮询：等用户在气泡里回答
     func waitForAnswer(requestId: String, timeout: TimeInterval, completion: @escaping (String?) -> Void) {
         if let a = pendingAnswers.removeValue(forKey: requestId) {
+            Log.info("wait id=\(requestId.prefix(8)) 已有答案，直接返回")
             completion(a)
             return
         }
+        Log.info("wait id=\(requestId.prefix(8)) 挂起 \(Int(timeout))s")
         if let old = waiters.removeValue(forKey: requestId) {
             old.timer.invalidate()
             old.completion(nil)
         }
         let t = Timer(timeInterval: timeout, repeats: false) { [weak self] _ in
             guard let self, let w = self.waiters.removeValue(forKey: requestId) else { return }
+            Log.info("wait id=\(requestId.prefix(8)) 超时")
             w.completion(nil)
         }
         RunLoop.main.add(t, forMode: .common)
@@ -174,18 +179,22 @@ final class PetController: NSObject {
         let recent = Date().timeIntervalSince(c.updatedAt) < 45
         if let rid = c.requestId, let w = waiters.removeValue(forKey: rid) {
             // MCP 调用还挂着：直接作为工具结果回去，Claude 在同一对话里继续
+            Log.info("answer 「\(text)」→ 回传给挂起的 MCP 调用 id=\(rid.prefix(8))")
             w.timer.invalidate()
             w.completion(text)
             c.state = .working
         } else if let rid = c.requestId, c.state == .ask, recent {
             // MCP 马上会来取
+            Log.info("answer 「\(text)」→ 暂存，等 MCP 来取 id=\(rid.prefix(8))")
             pendingAnswers[rid] = text
             c.state = .working
         } else {
             // 走辅助功能：切到那条对话，把答案填进输入框发出去
+            Log.info("answer 「\(text)」→ 走辅助功能填进对话 titles=\(c.titlesForLookup)")
             c.state = .working
             bridge.deliver(text, titles: c.titlesForLookup) { [weak self] ok in
                 guard let self else { return }
+                Log.info("deliver 结果 ok=\(ok)")
                 if !ok {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
@@ -207,7 +216,9 @@ final class PetController: NSObject {
     func openConversation(_ c: Conversation) {
         c.unread = false
         if currentBubble === c { hideBubble() }
+        Log.info("open titles=\(c.titlesForLookup)")
         bridge.open(titles: c.titlesForLookup) { [weak self] ok in
+            Log.info("open 结果 ok=\(ok)")
             if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recompute() }
         }

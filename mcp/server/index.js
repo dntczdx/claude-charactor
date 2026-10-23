@@ -79,7 +79,9 @@ server.registerTool(
     let res;
     try {
       res = await postJSON("/notify", payload);
+      console.error(`[claude-girl] notify topic=${payload.topic} kind=${payload.kind} id=${res && res.id}`);
     } catch (e) {
+      console.error(`[claude-girl] notify 失败: ${e && e.message}`);
       return text(`（桌宠 app 没在运行或没连上 ${BASE}，这次没通知到；不影响你继续。）`);
     }
 
@@ -88,12 +90,14 @@ server.registerTool(
     }
 
     try {
+      console.error(`[claude-girl] wait id=${res.id} ${WAIT_SECONDS}s`);
       const w = await waitAnswer(res.id, WAIT_SECONDS);
+      console.error(`[claude-girl] wait 结果 ${JSON.stringify(w)}`);
       if (w && w.answered && typeof w.answer === "string" && w.answer.trim()) {
         return text(`用户在气泡里回答：${w.answer.trim()}\n请据此直接继续，不必再确认。`);
       }
     } catch (e) {
-      // 超时或连接问题，按没回答处理
+      console.error(`[claude-girl] wait 异常: ${e && e.message}`);
     }
     return text(
       "用户暂时没在气泡里回答。请结束这一轮回复，用一两句话说明你在等什么；" +

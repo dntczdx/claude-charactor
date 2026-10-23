@@ -262,6 +262,7 @@ final class ClaudeBridge {
             if best >= 0.5 { candidates.append((el, best)) }
             return false
         }
+        Log.info("侧栏匹配「\(topic)」候选 \(candidates.count) 个")
         guard !candidates.isEmpty else { return false }
         candidates.sort { $0.1 > $1.1 }
         for (el, _) in candidates.prefix(4) {
@@ -301,8 +302,9 @@ final class ClaudeBridge {
         Thread.sleep(forTimeInterval: 0.9)
         postKey(36, flags: [])                           // ↩︎
         Thread.sleep(forTimeInterval: 0.9)
-        if let win = mainWindow(), let now = currentConversationTitle(window: win), now != before,
-           titles.contains(where: { Self.similarity($0, now) >= 0.4 }) {
+        let after = mainWindow().flatMap { currentConversationTitle(window: $0) }
+        Log.info("⌘K 搜索「\(query)」前=\(before ?? "-") 后=\(after ?? "-")")
+        if let now = after, now != before, titles.contains(where: { Self.similarity($0, now) >= 0.4 }) {
             return true
         }
         postKey(53, flags: [])                           // ⎋ 收起搜索框
@@ -320,6 +322,7 @@ final class ClaudeBridge {
             }
             return false
         }
+        Log.info("输入框候选 \(fields.count) 个")
         guard !fields.isEmpty else { return false }
         // 优先：占位文字像输入框的；否则取最后一个（输入框在页面底部）
         let composer = fields.first(where: { el in
@@ -329,6 +332,14 @@ final class ClaudeBridge {
 
         AXUIElementSetAttributeValue(composer, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         Thread.sleep(forTimeInterval: 0.25)
+        let focused = (attr(composer, kAXFocusedAttribute) as? Bool) ?? false
+        if !focused {
+            // 辅助功能聚焦不管用（网页里的富文本框常见）：在它中间点一下
+            if let center = centerPoint(of: composer) {
+                clickAt(center)
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+        }
         pasteText(text)
         Thread.sleep(forTimeInterval: 0.35)
 
@@ -339,10 +350,28 @@ final class ClaudeBridge {
                 typed = (str(composer, kAXValueAttribute) ?? "").contains(text.prefix(8))
             }
         }
+        Log.info("输入框 focused=\(focused) typed=\(typed)")
         if typed {
             postKey(36, flags: [])                 // ↩︎
         }
         return typed
+    }
+
+    /// 元素在屏幕上的中心（AX 坐标系：左上角为原点，和 CGEvent 一致）
+    private func centerPoint(of el: AXUIElement) -> CGPoint? {
+        guard let posV = attr(el, kAXPositionAttribute), let sizeV = attr(el, kAXSizeAttribute) else { return nil }
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(posV as! AXValue, .cgPoint, &pos), AXValueGetValue(sizeV as! AXValue, .cgSize, &size) else { return nil }
+        return CGPoint(x: pos.x + size.width / 2, y: pos.y + min(size.height / 2, 20))
+    }
+
+    private func clickAt(_ p: CGPoint) {
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left) else { return }
+        down.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.04)
+        up.post(tap: .cghidEventTap)
     }
 
     /// 用剪贴板粘贴（对网页里的富文本输入框最可靠），1 秒后恢复剪贴板
