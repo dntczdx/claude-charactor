@@ -65,6 +65,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let ax = NSMenuItem(title: controller.bridge.isTrusted ? "辅助功能权限：已授权" : "授权辅助功能（用于跳转对话、代填回答）…", action: #selector(requestAX), keyEquivalent: "")
         ax.target = self
         menu.addItem(ax)
+        let dump = NSMenuItem(title: "导出 Claude 窗口结构（诊断）", action: #selector(dumpTree), keyEquivalent: "")
+        dump.target = self
+        menu.addItem(dump)
         let reload = NSMenuItem(title: "重新载入动画素材", action: #selector(reloadAssets), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
@@ -105,5 +108,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func testBubble() { controller.injectTestEvent() }
     @objc private func requestAX() { controller.bridge.requestTrust() }
     @objc private func reloadAssets() { controller.reloadAssets() }
+    @objc private func dumpTree() {
+        controller.bridge.dumpTree { url in
+            guard let url else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 }

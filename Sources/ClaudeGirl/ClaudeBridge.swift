@@ -308,6 +308,42 @@ final class ClaudeBridge {
         return out
     }
 
+    // MARK: 诊断：导出窗口结构
+
+    /// 把 Claude 窗口的辅助功能树（前 N 个节点）写到 ~/Library/Logs/ClaudeGirl-axdump.txt
+    func dumpTree(completion: @escaping (URL?) -> Void) {
+        axQueue.async { [weak self] in
+            guard let self, let win = self.mainWindow() else { DispatchQueue.main.async { completion(nil) }; return }
+            var lines: [String] = []
+            lines.append("window title: \(self.str(win, kAXTitleAttribute) ?? "-")")
+            lines.append("window document: \(self.str(win, "AXDocument") ?? "-")")
+            lines.append("window url: \(self.urlString(win) ?? "-")")
+            var n = 0
+            self.walk(win, maxNodes: 6000, maxDepth: 60) { el, depth in
+                n += 1
+                let r = self.role(el)
+                let sub = self.str(el, kAXSubroleAttribute) ?? ""
+                var bits: [String] = []
+                if let t = self.str(el, kAXTitleAttribute), !t.isEmpty { bits.append("title=\(t.prefix(60))") }
+                if let d = self.str(el, kAXDescriptionAttribute), !d.isEmpty { bits.append("desc=\(d.prefix(60))") }
+                if let v = self.str(el, kAXValueAttribute), !v.isEmpty { bits.append("value=\(v.prefix(60))") }
+                if let u = self.urlString(el) { bits.append("url=\(u.prefix(120))") }
+                if let doc = self.str(el, "AXDocument") { bits.append("doc=\(doc.prefix(120))") }
+                if let dom = self.str(el, "AXDOMIdentifier"), !dom.isEmpty { bits.append("id=\(dom.prefix(40))") }
+                // 只记录有信息量的节点，纯容器跳过
+                let interesting = !bits.isEmpty || r == "AXWebArea" || r == "AXLink" || r == "AXButton" || r == "AXTextArea"
+                if interesting && lines.count < 2500 {
+                    lines.append(String(repeating: " ", count: min(depth, 40)) + "[\(r)\(sub.isEmpty ? "" : "/" + sub)] " + bits.joined(separator: " | "))
+                }
+                return false
+            }
+            lines.append("nodes visited: \(n)")
+            let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ClaudeGirl-axdump.txt")
+            try? lines.joined(separator: "\n").data(using: .utf8)?.write(to: url)
+            DispatchQueue.main.async { completion(url) }
+        }
+    }
+
     // MARK: 跳转
 
     private func navigate(to id: String?, titles: [String], deepLinkTried: Bool = false) -> Bool {

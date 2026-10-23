@@ -132,12 +132,12 @@ final class PetController: NSObject {
         }
         // 没拿到 UUID：用登记表按标题精确/高相似度查
         if c.chatID == nil { c.chatID = lookupChatID(for: c) }
-        guard let ax = axConversation, ax !== c else { return }
+        guard let ax = axConversation, ax !== c, ax.topic != "当前对话" || ax.chatID != nil else { return }
         let axBusy = ax.state == .working || ax.state == .thinking
         let recent = Date().timeIntervalSince(ax.updatedAt) < 30
         guard axBusy || recent else { return }
         if c.sidebarTitle == nil || c.sidebarTitle == ax.topic {
-            c.sidebarTitle = ax.sidebarTitle ?? ax.topic
+            if ax.topic != "当前对话" { c.sidebarTitle = ax.sidebarTitle ?? ax.topic }
             if c.chatID == nil { c.chatID = ax.chatID }
             // ax 这条是从窗口标题临时建的壳，合并掉
             if ax.headline.isEmpty, ax.requestId == nil {
