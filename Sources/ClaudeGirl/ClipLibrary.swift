@@ -94,16 +94,16 @@ final class ClipLibrary {
 
     private func decode(_ name: String) -> Clip? {
         guard let root = AssetLocator.clipsDirectory else { return nil }
+        // 先找单文件动图（仓库自带、透明通道有保证），解不出来再退回帧目录
+        for ext in ["webp", "gif", "apng", "png", "heics"] {
+            let f = root.appendingPathComponent("\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: f.path), let clip = decodeAnimated(f, name: name) {
+                return clip
+            }
+        }
         let dir = root.appendingPathComponent(name)
         var isDir: ObjCBool = false
-        if !(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir) && isDir.boolValue) {
-            // 单文件动图
-            for ext in ["webp", "gif", "apng", "png", "heics"] {
-                let f = root.appendingPathComponent("\(name).\(ext)")
-                if FileManager.default.fileExists(atPath: f.path) { return decodeAnimated(f, name: name) }
-            }
-            return nil
-        }
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return nil }
         let exts: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "tif", "tiff"]
         let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
             .filter { exts.contains($0.pathExtension.lowercased()) }
