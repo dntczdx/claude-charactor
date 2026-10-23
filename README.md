@@ -55,7 +55,8 @@ scripts/install-mcp.sh
    **设置 → 个人偏好**。这一步决定 Claude 会不会在每轮回复结束时调用 `notify`。
 4. 菜单栏茶杯图标 → 「测试一下气泡」，看一眼效果。
 
-> 每次重新编译后签名会变，辅助功能权限需要在系统设置里重新勾一次。
+> 辅助功能权限跟签名绑定。跑一次 `scripts/make-signing-cert.sh` 生成本机自签名证书后，打包脚本会用它签名，授权一次即可；
+> 否则临时签名每次都变，重编译后要在 Accessibility 里删掉旧条目再加一次 `/Applications/ClaudeGirl.app`。
 
 ## 平时怎么用
 

@@ -48,8 +48,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# 临时签名：辅助功能权限跟签名绑定，每次重新编译后需要在「系统设置 → 隐私与安全性 → 辅助功能」里重新勾一次
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# 签名：有「ClaudeGirl Dev」自签名证书（scripts/make-signing-cert.sh 生成）就用它，签名稳定、辅助功能权限不会失效；
+# 否则用临时签名，每次重新编译后都得重新授权。
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "ClaudeGirl Dev"; then
+  IDENTITY="ClaudeGirl Dev"
+fi
+if [ -n "$IDENTITY" ]; then
+  codesign --force --deep --options runtime --sign "$IDENTITY" "$APP" 2>/dev/null || codesign --force --deep --sign "$IDENTITY" "$APP"
+  echo "已用「$IDENTITY」签名"
+  SIGNED_STABLE=1
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  SIGNED_STABLE=0
+fi
 
 echo "打包完成：$APP"
 
@@ -62,7 +74,12 @@ if [ "${INSTALL:-1}" = "1" ]; then
   touch /Applications/ClaudeGirl.app
   open /Applications/ClaudeGirl.app
   echo "已安装并启动：/Applications/ClaudeGirl.app"
-  echo "提醒：重新编译后要在 System Settings → Privacy & Security → Accessibility 里把开关重新打开一次"
+  if [ "$SIGNED_STABLE" = "1" ]; then
+    echo "签名稳定，辅助功能权限授权一次即可。"
+  else
+    echo "提醒：临时签名每次都变，要在 System Settings → Privacy & Security → Accessibility 里删掉旧条目、重新加 /Applications/ClaudeGirl.app。"
+    echo "想一劳永逸：先跑一次 scripts/make-signing-cert.sh"
+  fi
 else
   echo "运行：open $APP"
 fi
