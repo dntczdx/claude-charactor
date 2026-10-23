@@ -322,7 +322,7 @@ final class ClaudeBridge {
 
         // 2. claude:// 链接（open(chat:) 里没发过才发）
         if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
-            DispatchQueue.main.sync { NSWorkspace.shared.open(url) }
+            DispatchQueue.main.sync { _ = NSWorkspace.shared.open(url) }
             Thread.sleep(forTimeInterval: 1.4)
             if let w = mainWindow(), currentChatID(window: w) == id {
                 Log.info("跳转 claude:// 成功")
