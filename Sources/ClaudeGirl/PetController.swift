@@ -44,6 +44,7 @@ final class PetController: NSObject {
             self?.registerSidebar(links)
         })
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
+        startRegistryPolling()
 
         if !bridge.isTrusted {
             // 第一次启动顺手要一下权限；拒绝也不影响看通知
@@ -55,6 +56,7 @@ final class PetController: NSObject {
     func stop() {
         server?.stop()
         bridge.stopObserving()
+        registryTimer?.invalidate()
     }
 
     private func startServer() {
@@ -91,6 +93,26 @@ final class PetController: NSObject {
             let id = handleNotify(e)
             return HTTPResponse(json: ["id": id, "state": conversation(id: id)?.state.label ?? ""])
 
+        case ("GET", "/debug"):
+            let sessions = SessionRegistry.snapshot().map { ["id": $0.chatID, "name": $0.name, "busy": $0.busy, "pid": Int($0.pid)] as [String: Any] }
+            let convs = conversations.map { ["topic": $0.topic, "sidebar": $0.sidebarTitle ?? "", "chat": $0.chatID ?? "", "state": $0.state.label] }
+            return HTTPResponse(json: ["accessibility": bridge.isTrusted, "foregroundTitle": bridge.currentTitle ?? "", "foregroundChat": bridge.currentChatID ?? "",
+                                       "sessions": sessions, "conversations": convs, "registry": Settings.shared.chatRegistry])
+
+        case ("POST", "/open"):
+            // 诊断：按 topic / chat id 跳转，等同于点气泡里的「打开对话」
+            let obj = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            let c: Conversation
+            if let id = obj["id"] as? String, !id.isEmpty {
+                c = conversations.first { $0.chatID == id } ?? { let n = Conversation(topic: (obj["topic"] as? String) ?? id); n.chatID = id; return n }()
+            } else if let t = obj["topic"] as? String, !t.isEmpty {
+                c = conversation(forTopic: t)
+            } else {
+                return HTTPResponse(status: 400, json: ["error": "需要 id 或 topic"])
+            }
+            openConversation(c)
+            return HTTPResponse(json: ["ok": true, "chat": c.chatID ?? "", "titles": c.titlesForLookup])
+
         case ("POST", "/status"):
             guard let e = req.json(StatusEvent.self) else { return HTTPResponse(status: 400, json: ["error": "需要 JSON"]) }
             handleStatus(e)
@@ -114,9 +136,21 @@ final class PetController: NSObject {
         let c = conversation(forTopic: e.topic)
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
+        if let s = SessionRegistry.caller(topic: c.topic, headline: c.headline) {
+            // 正在生成的 Code 会话就是发 notify 的那条：直接绑定 ID 和侧栏标题
+            if let other = conversations.first(where: { $0 !== c && $0.chatID == s.chatID }) {
+                // 同一会话之前用别的 topic 记过：合并到旧的那条上
+                conversations.removeAll { $0 === other }
+                if axConversation === other { axConversation = c }
+            }
+            c.chatID = s.chatID
+            if !s.name.isEmpty { c.sidebarTitle = s.name }
+            Log.info("notify 绑定到 Code 会话 \(s.hostID.prefix(14)) 「\(s.name)」")
+        }
         linkToForegroundConversation(c)
-        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID?.prefix(8) ?? "-")")
+        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID.map(Self.shortID) ?? "-")")
         cancelAXFallback()
+        if let id = c.chatID { fallbackTimers.removeValue(forKey: id)?.invalidate() }
         bump(c)
         recompute()
         return id
@@ -227,7 +261,7 @@ final class PetController: NSObject {
         c.unread = false
         if currentBubble === c { hideBubble() }
         if c.chatID == nil { c.chatID = lookupChatID(for: c) }
-        Log.info("open id=\(c.chatID?.prefix(8) ?? "-") titles=\(c.titlesForLookup)")
+        Log.info("open id=\(c.chatID.map(Self.shortID) ?? "-") titles=\(c.titlesForLookup)")
         bridge.open(chat: c.chatRef) { [weak self] ok in
             Log.info("open 结果 ok=\(ok)")
             if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }
@@ -273,16 +307,95 @@ final class PetController: NSObject {
         handleNotify(e)
     }
 
+    static func shortID(_ id: String) -> String { ClaudeBridge.shortID(id) }
+
+    // MARK: Claude Code 会话登记表（~/.claude/sessions）
+
+    private var registryTimer: Timer?
+    private var registryBusy: Set<String> = []
+    private var fallbackTimers: [String: Timer] = [:]
+
+    private func startRegistryPolling() {
+        let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in self?.pollRegistry() }
+        RunLoop.main.add(t, forMode: .common)
+        registryTimer = t
+        pollRegistry()
+    }
+
+    private func pollRegistry() {
+        let sessions = SessionRegistry.snapshot()
+        guard !sessions.isEmpty else { return }
+        registerSidebar(sessions.filter { !$0.name.isEmpty }.map { (id: $0.chatID, title: $0.name) })
+        let busyNow = Set(sessions.filter(\.busy).map(\.chatID))
+        for s in sessions {
+            let wasBusy = registryBusy.contains(s.chatID)
+            if s.busy && !wasBusy {
+                sessionStarted(s)
+            } else if !s.busy && wasBusy {
+                sessionFinished(s)
+            }
+        }
+        registryBusy = busyNow
+    }
+
+    /// 已经按 ID / 标题记过的对话；没有就按侧栏标题建一条
+    private func conversation(for s: CodeSession) -> Conversation {
+        if let c = conversations.first(where: { $0.chatID == s.chatID }) { return c }
+        let c = conversation(forTopic: s.name.isEmpty ? s.hostID : s.name)
+        c.chatID = s.chatID
+        if !s.name.isEmpty, c.sidebarTitle == nil { c.sidebarTitle = s.name }
+        return c
+    }
+
+    private func sessionStarted(_ s: CodeSession) {
+        let c = conversation(for: s)
+        fallbackTimers.removeValue(forKey: s.chatID)?.invalidate()
+        let justNotified = c.requestId != nil && c.state.showsBubble && Date().timeIntervalSince(c.updatedAt) < 90
+        guard c.state != .working && c.state != .thinking && !justNotified else { return }
+        c.state = .thinking
+        c.updatedAt = Date()
+        let t = Timer(timeInterval: 3, repeats: false) { [weak self, weak c] _ in
+            guard let self, let c, c.state == .thinking else { return }
+            c.state = .working
+            self.recompute()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        bump(c)
+        recompute()
+    }
+
+    private func sessionFinished(_ s: CodeSession) {
+        guard let c = conversations.first(where: { $0.chatID == s.chatID }), c.state == .working || c.state == .thinking else { return }
+        // 生成结束：给 MCP 的 notify 4 秒时间；没来就用兜底的完成提醒
+        fallbackTimers[s.chatID]?.invalidate()
+        let t = Timer(timeInterval: 4, repeats: false) { [weak self, weak c] _ in
+            guard let self, let c, c.state == .working || c.state == .thinking else { return }
+            c.state = .done
+            c.headline = "这条回复写完了"
+            c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]
+            c.question = nil
+            c.options = []
+            c.requestId = nil
+            c.updatedAt = Date()
+            c.unread = true
+            self.bump(c)
+            self.recompute()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        fallbackTimers[s.chatID] = t
+    }
+
     // MARK: 辅助功能观察到的生成状态
 
     private var bridgeGenerating = false
 
     /// 侧栏扫描结果：登记「标题 → UUID」，并补全已有对话的 UUID
     private func registerSidebar(_ links: [(id: String, title: String)]) {
-        var reg = Settings.shared.chatRegistry
+        let before = Settings.shared.chatRegistry
+        var reg = before
         for l in links where !l.title.isEmpty { reg[l.title] = l.id }
         if reg.count > 400 { reg = Dictionary(uniqueKeysWithValues: reg.suffix(300).map { ($0.key, $0.value) }) }
-        Settings.shared.chatRegistry = reg
+        if reg != before { Settings.shared.chatRegistry = reg }
         for c in conversations where c.chatID == nil {
             c.chatID = lookupChatID(for: c)
         }
@@ -478,6 +591,10 @@ extension PetController {
                     respond(HTTPResponse(json: ["answered": false]))
                 }
             }
+            return
+        }
+        if req.method == "GET", req.path == "/dump" {
+            bridge.dumpTree { url in respond(HTTPResponse(json: ["path": url?.path ?? ""])) }
             return
         }
         respond(route(req))

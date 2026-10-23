@@ -55,6 +55,7 @@ if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | 
   IDENTITY="ClaudeGirl Dev"
 fi
 if [ -n "$IDENTITY" ]; then
+  echo "用「${IDENTITY}」签名… 若弹出钥匙串窗口（codesign 想使用私钥），请点「始终允许」，脚本会接着跑。"
   codesign --force --deep --options runtime --sign "$IDENTITY" "$APP" 2>/dev/null || codesign --force --deep --sign "$IDENTITY" "$APP"
   echo "已用「${IDENTITY}」签名"
   SIGNED_STABLE=1

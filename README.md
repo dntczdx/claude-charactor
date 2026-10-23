@@ -49,7 +49,7 @@ scripts/install-mcp.sh
 
 1. **授权辅助功能**：第一次启动会弹系统提示；或在菜单栏的茶杯图标里点「授权辅助功能」。
    系统设置 → 隐私与安全性 → 辅助功能 里勾上「克劳德大小姐」。
-   没有这个权限也能收通知，只是不能跳转对话、不能替你把答案填进输入框、看不到「正在生成」状态。
+   没有这个权限也能收通知，也能跳到 **Code 页**的会话（用 `claude://` 链接）；只是聊天页的对话跳不过去、不能替你把答案填进输入框。
 2. **完全退出并重开 Claude 桌面版**（⌘Q），设置 → 开发者 里应看到 `claude-girl` 已连接。
 3. 把 [`mcp/CLAUDE_PREFERENCES.md`](mcp/CLAUDE_PREFERENCES.md) 里那段话贴进 Claude 桌面版
    **设置 → 个人偏好**。这一步决定 Claude 会不会在每轮回复结束时调用 `notify`。
@@ -76,9 +76,15 @@ scripts/install-mcp.sh
 2. MCP 服务器 `POST /notify` 给 app；app 以 `topic` 为 key 更新对话状态表，决定姿态和气泡。
 3. 若带问题，MCP 服务器 `GET /wait?id=…` 长轮询最多 48 秒（Claude 桌面版约 60 秒会掐断工具调用）。
    你在气泡里的回答会作为工具结果返回；等不到则返回「用户稍后回答」，Claude 结束本轮。
-4. 之后你再回答时，app 用辅助功能 API：激活 Claude → 在侧栏按标题找到那条对话 → 聚焦输入框 → 粘贴 → 回车。
-5. 与此同时，app 每 1.5 秒看一眼 Claude 窗口里有没有「停止生成」按钮，有就是正在生成（敲键盘姿态）；
-   生成结束 4 秒内没收到 `notify`，就用兜底的「这条回复写完了」气泡提醒你。
+4. 之后你再回答时，app 先跳到那条对话，再用辅助功能 API 聚焦输入框 → 粘贴 → 回车。
+5. **怎么知道 notify 来自哪条对话、怎么跳过去**：
+   - **Code 页的会话**（Claude Code）：每条会话的进程都把自己登记在 `~/.claude/sessions/<pid>.json`
+     （侧栏标题 `name`、桌面版会话 ID `hostSessionId`、是否正在生成 `status`）。app 每 1.5 秒读一遍：
+     正在生成的那条就是发 `notify` 的那条（几条同时在生成时，再看谁的对话记录里出现了这次的 headline）；
+     跳转直接打开 `claude://claude.ai/epitaxy/<hostSessionId>`，不需要辅助功能权限；「正在写…」姿态也来自这里。
+   - **聊天页的对话**（claude.ai/chat）：靠辅助功能 API 读网页区 URL 里的 `/chat/<uuid>` 和侧栏链接，
+     跳转用 `claude://claude.ai/chat/<uuid>`；侧栏按 UUID / 标题点、⌘K 搜索作为兜底。
+   - 生成结束 4 秒内没收到 `notify`，就用兜底的「这条回复写完了」气泡提醒你。
 
 本地接口（只监听 127.0.0.1，端口 47333）：
 
@@ -88,6 +94,9 @@ scripts/install-mcp.sh
 | POST | `/notify` | `{topic, headline, points[], question?, options[]?, needs_input?, kind?}` → `{id}` |
 | GET | `/wait?id=&timeout=` | 长轮询等回答 → `{answered, answer?}` |
 | POST | `/status` | `{topic?, state: working\|thinking\|idle}` 只改姿态 |
+| GET | `/debug` | 诊断：登记表里的会话、已知对话与绑定的 ID、前台对话 |
+| POST | `/open` | 诊断：`{topic}` 或 `{id}`，等同于点气泡里的「打开对话」 |
+| GET | `/dump` | 诊断：把 Claude 窗口的辅助功能树写到 `~/Library/Logs/ClaudeGirl-axdump.txt` |
 
 ## 开发
 
@@ -104,7 +113,9 @@ swift run            # 直接跑，自动找源码目录下的 Assets/clips
 
 - **Claude 桌面版是单窗口**，界面上看不到后台对话的进度，所以「哪条对话完成了」只能靠 Claude 调用 `notify`。
   个人偏好那段话没贴、或 Claude 偶尔忘了调用，就只有兜底提醒（当前可见对话生成结束时）。
-- 「打开对话」靠侧栏标题模糊匹配 `topic`；Claude 自动起的标题和 `topic` 差太多时会匹配不到，此时只激活 Claude 窗口。
+- Code 页的会话按 `~/.claude/sessions` 绑定，不依赖标题；聊天页的对话才靠侧栏标题模糊匹配 `topic`，
+  Claude 自动起的标题和 `topic` 差太多时会匹配不到，此时只激活 Claude 窗口。`curl 127.0.0.1:47333/debug` 能看到绑定情况。
+- 重新打包时若 `codesign` 停住不动，是钥匙串在问「是否允许使用 ClaudeGirl Dev 私钥」，点「始终允许」即可，以后不再问。
 - 替你填答案依赖 Claude 桌面版的输入框可被辅助功能聚焦；若失败，答案会复制到剪贴板并提示。
 - 看不到小人：菜单栏茶杯 → 「显示大小姐」；没有素材时会显示一个橙色占位块并提示运行 `prepare-assets.sh`。
 - MCP 没连上：检查 `~/Library/Application Support/Claude/claude_desktop_config.json` 里 `claude-girl` 的 `command` 是绝对路径的 node；
