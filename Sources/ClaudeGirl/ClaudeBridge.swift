@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 /// 通过辅助功能 API 跟 Claude 桌面版打交道：
-/// - 激活窗口、按标题切换到某条对话
+/// - 激活窗口、按标题切换到某条对话（侧栏点击，失败则 ⌘K 搜索）
 /// - 把回答填进输入框并发送
 /// - 轮询「停止生成」按钮，判断当前对话是否在生成；读窗口标题得到当前对话名
 final class ClaudeBridge {
@@ -12,6 +12,7 @@ final class ClaudeBridge {
     private var pollTimer: DispatchSourceTimer?
     private var lastGenerating = false
     private var lastTitle: String?
+    private var enabledPID: pid_t = 0
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -26,6 +27,9 @@ final class ClaudeBridge {
         }
         return nil
     }
+
+    /// 当前（前台）对话的窗口标题
+    var currentTitle: String? { lastTitle }
 
     // MARK: 激活
 
@@ -48,26 +52,42 @@ final class ClaudeBridge {
 
     // MARK: 对外：打开对话 / 发送回答
 
-    /// 激活 Claude 并切到标题匹配 topic 的对话。找不到就只激活窗口。
-    func open(topic: String?, completion: @escaping (Bool) -> Void) {
+    /// 激活 Claude 并切到标题匹配 titles 里任一项的对话（按顺序试）。都找不到就只激活窗口。
+    func open(titles: [String], completion: @escaping (Bool) -> Void) {
         activate { [weak self] ok in
             guard let self, ok else { completion(false); return }
-            guard let topic, !topic.isEmpty, self.isTrusted else { completion(ok); return }
-            self.after(0.6) {
+            let wanted = titles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            guard !wanted.isEmpty, self.isTrusted else { completion(ok); return }
+            self.after(0.7) {
                 self.axQueue.async {
-                    let found = self.pressConversationRow(matching: topic)
+                    // 已经在这条对话上了
+                    if let win = self.mainWindow(), let cur = self.currentConversationTitle(window: win),
+                       wanted.contains(where: { Self.similarity($0, cur) >= 0.6 }) {
+                        DispatchQueue.main.async { completion(true) }
+                        return
+                    }
+                    for t in wanted where self.pressConversationRow(matching: t) {
+                        DispatchQueue.main.async { completion(true) }
+                        return
+                    }
+                    // 侧栏里没找到（可能收起了，或标题对不上）：用搜索框
+                    let found = self.searchAndOpen(wanted)
                     DispatchQueue.main.async { completion(found) }
                 }
             }
         }
     }
 
+    func open(topic: String?, completion: @escaping (Bool) -> Void) {
+        open(titles: topic.map { [$0] } ?? [], completion: completion)
+    }
+
     /// 切到对话，把 text 填进输入框，回车发送
-    func deliver(_ text: String, topic: String?, completion: @escaping (Bool) -> Void) {
+    func deliver(_ text: String, titles: [String], completion: @escaping (Bool) -> Void) {
         guard isTrusted else { completion(false); return }
-        open(topic: topic) { [weak self] _ in
+        open(titles: titles) { [weak self] _ in
             guard let self else { completion(false); return }
-            self.after(0.8) {
+            self.after(0.9) {
                 self.axQueue.async {
                     let ok = self.typeIntoComposer(text)
                     DispatchQueue.main.async { completion(ok) }
@@ -84,6 +104,7 @@ final class ClaudeBridge {
         t.schedule(deadline: .now() + 2, repeating: 1.5)
         t.setEventHandler { [weak self] in
             guard let self, self.isTrusted, self.runningApp != nil else { return }
+            self.enableElectronAccessibility()
             guard let win = self.mainWindow() else { return }
             let generating = self.findStopButton(in: win) != nil
             let title = self.currentConversationTitle(window: win)
@@ -110,6 +131,15 @@ final class ClaudeBridge {
 
     private func axApp() -> AXUIElement? {
         runningApp.map { AXUIElementCreateApplication($0.processIdentifier) }
+    }
+
+    /// Electron/Chromium 默认不构建网页的辅助功能树，要主动打开这个开关
+    private func enableElectronAccessibility() {
+        guard let app = runningApp, app.processIdentifier != enabledPID else { return }
+        let el = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        enabledPID = app.processIdentifier
     }
 
     private func attr(_ el: AXUIElement, _ name: String) -> AnyObject? {
@@ -146,13 +176,14 @@ final class ClaudeBridge {
 
     private func mainWindow() -> AXUIElement? {
         guard let app = axApp() else { return nil }
+        enableElectronAccessibility()
         if let w = element(attr(app, kAXFocusedWindowAttribute)) { return w }
         if let w = element(attr(app, kAXMainWindowAttribute)) { return w }
         return (attr(app, kAXWindowsAttribute) as? [AXUIElement])?.first
     }
 
     /// 深度优先遍历，visit 返回 true 时停止
-    private func walk(_ root: AXUIElement, maxNodes: Int = 8000, maxDepth: Int = 48, visit: (AXUIElement, Int) -> Bool) {
+    private func walk(_ root: AXUIElement, maxNodes: Int = 25000, maxDepth: Int = 60, visit: (AXUIElement, Int) -> Bool) {
         var stack: [(AXUIElement, Int)] = [(root, 0)]
         var n = 0
         while let item = stack.popLast() {
@@ -166,16 +197,29 @@ final class ClaudeBridge {
         }
     }
 
-    private static func normalize(_ s: String) -> String {
+    // MARK: 文本相似度
+
+    static func normalize(_ s: String) -> String {
         let lowered = s.lowercased()
         let scalars = lowered.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || ($0.value >= 0x3400 && $0.value <= 0x9FFF) }
         return String(String.UnicodeScalarView(scalars))
     }
 
-    private static func fuzzyMatch(_ a: String, _ b: String) -> Bool {
+    /// 0…1：字符二元组重合度（对中文标题友好），互相包含直接算 1
+    static func similarity(_ a: String, _ b: String) -> Double {
         let na = normalize(a), nb = normalize(b)
-        guard na.count >= 2, nb.count >= 2 else { return false }
-        return na.contains(nb) || nb.contains(na)
+        guard na.count >= 2, nb.count >= 2 else { return na == nb && !na.isEmpty ? 1 : 0 }
+        if na.contains(nb) || nb.contains(na) { return 1 }
+        func grams(_ s: String) -> Set<String> {
+            let chars = Array(s)
+            guard chars.count >= 2 else { return [s] }
+            var set = Set<String>()
+            for i in 0..<(chars.count - 1) { set.insert(String(chars[i...i + 1])) }
+            return set
+        }
+        let ga = grams(na), gb = grams(nb)
+        let inter = ga.intersection(gb).count
+        return Double(inter) / Double(min(ga.count, gb.count))
     }
 
     // MARK: 具体动作
@@ -183,10 +227,10 @@ final class ClaudeBridge {
     /// 窗口标题通常是「对话标题 - Claude」
     private func currentConversationTitle(window: AXUIElement) -> String? {
         guard var t = str(window, kAXTitleAttribute)?.trimmingCharacters(in: .whitespaces), !t.isEmpty else { return nil }
-        for suffix in [" - Claude", " – Claude", " | Claude", " — Claude"] {
-            if t.hasSuffix(suffix) { t = String(t.dropLast(suffix.count)) }
+        for suffix in [" - Claude", " – Claude", " | Claude", " — Claude", " — Claude", "- Claude"] {
+            if t.hasSuffix(suffix) { t = String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces) }
         }
-        if t.isEmpty || t == "Claude" { return nil }
+        if t.isEmpty || t == "Claude" || t == "New chat" || t == "新对话" { return nil }
         return t
     }
 
@@ -207,21 +251,24 @@ final class ClaudeBridge {
     /// 在侧栏找标题匹配的那一行并按下
     private func pressConversationRow(matching topic: String) -> Bool {
         guard let win = mainWindow() else { return false }
-        var candidates: [(AXUIElement, Int)] = []  // (元素, 长度差)
-        let target = Self.normalize(topic)
+        var candidates: [(AXUIElement, Double)] = []
         walk(win) { el, _ in
             let r = self.role(el)
-            guard r == "AXStaticText" || r == "AXLink" || r == "AXButton" || r == "AXCell" || r == "AXRow" else { return false }
-            for t in self.texts(el) where Self.fuzzyMatch(t, topic) {
-                candidates.append((el, abs(Self.normalize(t).count - target.count)))
-                break
+            guard r == "AXStaticText" || r == "AXLink" || r == "AXButton" || r == "AXCell" || r == "AXRow" || r == "AXMenuItem" else { return false }
+            var best = 0.0
+            for t in self.texts(el) where t.count <= 120 {
+                best = max(best, Self.similarity(t, topic))
             }
+            if best >= 0.5 { candidates.append((el, best)) }
             return false
         }
         guard !candidates.isEmpty else { return false }
-        candidates.sort { $0.1 < $1.1 }
-        for (el, _) in candidates.prefix(3) {
-            if press(elementOrAncestor: el) { return true }
+        candidates.sort { $0.1 > $1.1 }
+        for (el, _) in candidates.prefix(4) {
+            if press(elementOrAncestor: el) {
+                Thread.sleep(forTimeInterval: 0.5)
+                return true
+            }
         }
         return false
     }
@@ -238,10 +285,27 @@ final class ClaudeBridge {
             tried.append(e)
             cur = element(attr(e, kAXParentAttribute))
         }
-        // 没有可按的祖先：直接试按文字本身及其父级
         for e in tried.prefix(3) {
             if AXUIElementPerformAction(e, kAXPressAction as CFString) == .success { return true }
         }
+        return false
+    }
+
+    /// ⌘K 打开「搜索对话」，输入标题，回车进第一个结果；用窗口标题验证
+    private func searchAndOpen(_ titles: [String]) -> Bool {
+        guard let query = titles.first else { return false }
+        let before = mainWindow().flatMap { currentConversationTitle(window: $0) }
+        postKey(40, flags: .maskCommand)                 // ⌘K
+        Thread.sleep(forTimeInterval: 0.5)
+        pasteText(query)
+        Thread.sleep(forTimeInterval: 0.9)
+        postKey(36, flags: [])                           // ↩︎
+        Thread.sleep(forTimeInterval: 0.9)
+        if let win = mainWindow(), let now = currentConversationTitle(window: win), now != before,
+           titles.contains(where: { Self.similarity($0, now) >= 0.4 }) {
+            return true
+        }
+        postKey(53, flags: [])                           // ⎋ 收起搜索框
         return false
     }
 
@@ -265,18 +329,11 @@ final class ClaudeBridge {
 
         AXUIElementSetAttributeValue(composer, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         Thread.sleep(forTimeInterval: 0.25)
-
-        // 用剪贴板粘贴（对网页里的富文本输入框最可靠），完事恢复剪贴板
-        let pb = NSPasteboard.general
-        let saved = pb.string(forType: .string)
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-        postKey(9, flags: .maskCommand)          // ⌘V
+        pasteText(text)
         Thread.sleep(forTimeInterval: 0.35)
 
         var typed = (str(composer, kAXValueAttribute) ?? "").contains(text.prefix(8))
         if !typed {
-            // 退路：直接设值
             if AXUIElementSetAttributeValue(composer, kAXValueAttribute as CFString, text as CFTypeRef) == .success {
                 Thread.sleep(forTimeInterval: 0.2)
                 typed = (str(composer, kAXValueAttribute) ?? "").contains(text.prefix(8))
@@ -285,11 +342,20 @@ final class ClaudeBridge {
         if typed {
             postKey(36, flags: [])                 // ↩︎
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        return typed
+    }
+
+    /// 用剪贴板粘贴（对网页里的富文本输入框最可靠），1 秒后恢复剪贴板
+    private func pasteText(_ text: String) {
+        let pb = NSPasteboard.general
+        let saved = pb.string(forType: .string)
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        postKey(9, flags: .maskCommand)          // ⌘V
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             pb.clearContents()
             if let saved { pb.setString(saved, forType: .string) }
         }
-        return typed
     }
 
     private func postKey(_ key: CGKeyCode, flags: CGEventFlags) {

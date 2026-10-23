@@ -111,10 +111,28 @@ final class PetController: NSObject {
         let c = conversation(forTopic: e.topic)
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
+        linkToForegroundConversation(c)
         cancelAXFallback()
         bump(c)
         recompute()
         return id
+    }
+
+    /// notify 通常是前台正在生成的那条对话发来的（工具调用发生在回复过程中），
+    /// 把 Claude 自己起的 topic 和窗口标题（= 侧栏标题）对上，跳转时就能找到它。
+    private func linkToForegroundConversation(_ c: Conversation) {
+        guard let ax = axConversation, ax !== c else { return }
+        let axBusy = ax.state == .working || ax.state == .thinking
+        let recent = Date().timeIntervalSince(ax.updatedAt) < 30
+        guard axBusy || recent else { return }
+        if c.sidebarTitle == nil || c.sidebarTitle == ax.topic {
+            c.sidebarTitle = ax.sidebarTitle ?? ax.topic
+            // ax 这条是从窗口标题临时建的壳，合并掉
+            if ax.headline.isEmpty, ax.requestId == nil {
+                conversations.removeAll { $0 === ax }
+                axConversation = c
+            }
+        }
     }
 
     func handleStatus(_ e: StatusEvent) {
@@ -166,7 +184,7 @@ final class PetController: NSObject {
         } else {
             // 走辅助功能：切到那条对话，把答案填进输入框发出去
             c.state = .working
-            bridge.deliver(text, topic: c.topic) { [weak self] ok in
+            bridge.deliver(text, titles: c.titlesForLookup) { [weak self] ok in
                 guard let self else { return }
                 if !ok {
                     NSPasteboard.general.clearContents()
@@ -174,7 +192,7 @@ final class PetController: NSObject {
                     c.state = .idle
                     self.windowController.showWhisper("没能自动填进对话，答案已复制到剪贴板")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.recompute() }
-                    self.bridge.open(topic: c.topic) { _ in }
+                    self.bridge.open(titles: c.titlesForLookup) { _ in }
                 }
                 self.recompute()
             }
@@ -189,7 +207,10 @@ final class PetController: NSObject {
     func openConversation(_ c: Conversation) {
         c.unread = false
         if currentBubble === c { hideBubble() }
-        bridge.open(topic: c.topic) { _ in }
+        bridge.open(titles: c.titlesForLookup) { [weak self] ok in
+            if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recompute() }
+        }
         recompute()
     }
 
@@ -238,7 +259,9 @@ final class PetController: NSObject {
             cancelAXFallback()
             let c = conversation(forTopic: topic)
             axConversation = c
-            if c.state != .working && c.state != .thinking {
+            // notify 是在回复过程中调用的，之后 Claude 可能还在写：别把刚弹出的完成/提问气泡又打回「思考中」
+            let justNotified = c.requestId != nil && c.state.showsBubble && Date().timeIntervalSince(c.updatedAt) < 90
+            if c.state != .working && c.state != .thinking && !justNotified {
                 c.state = .thinking
                 c.updatedAt = Date()
                 axThinkTimer?.invalidate()
@@ -293,10 +316,10 @@ final class PetController: NSObject {
     /// 按主题找对话：完全一致，或一方包含另一方（Claude 自己起的主题和侧栏标题常常只差几个字）
     private func conversation(forTopic topic: String) -> Conversation {
         let t = Self.normalize(topic)
-        if let c = conversations.first(where: { Self.normalize($0.topic) == t }) { return c }
+        func names(_ c: Conversation) -> [String] { [c.topic, c.sidebarTitle].compactMap { $0 }.map(Self.normalize) }
+        if let c = conversations.first(where: { names($0).contains(t) }) { return c }
         if t.count >= 4, let c = conversations.first(where: {
-            let n = Self.normalize($0.topic)
-            return n.count >= 4 && (n.contains(t) || t.contains(n))
+            names($0).contains { n in n.count >= 4 && (n.contains(t) || t.contains(n)) }
         }) { return c }
         let c = Conversation(topic: topic)
         conversations.insert(c, at: 0)

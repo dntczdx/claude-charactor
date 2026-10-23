@@ -59,27 +59,21 @@ func relativeTime(_ date: Date) -> String {
 
 // MARK: - 小控件
 
-/// 自动换行的只读文字
-final class WrapLabel: NSTextField {
-    init(_ text: String, font: NSFont, color: NSColor, width: CGFloat, maxLines: Int = 0) {
-        super.init(frame: .zero)
-        stringValue = text
-        self.font = font
-        textColor = color
-        isEditable = false
-        isSelectable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byWordWrapping
-        maximumNumberOfLines = maxLines
-        cell?.wraps = true
-        cell?.isScrollable = false
-        preferredMaxLayoutWidth = width
-        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        setContentHuggingPriority(.defaultLow, for: .horizontal)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-    required init?(coder: NSCoder) { fatalError() }
+/// 自动换行的只读文字：固定宽度，高度随内容
+func WrapLabel(_ text: String, font: NSFont, color: NSColor, width: CGFloat, maxLines: Int = 0) -> NSTextField {
+    let l = NSTextField(wrappingLabelWithString: text)
+    l.font = font
+    l.textColor = color
+    l.isSelectable = false
+    l.lineBreakMode = .byWordWrapping
+    l.maximumNumberOfLines = maxLines
+    l.preferredMaxLayoutWidth = width
+    l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    l.setContentCompressionResistancePriority(.required, for: .vertical)
+    l.setContentHuggingPriority(.required, for: .vertical)
+    l.translatesAutoresizingMaskIntoConstraints = false
+    l.widthAnchor.constraint(equalToConstant: width).isActive = true
+    return l
 }
 
 /// 圆角小标签（对话标题徽标）
@@ -465,7 +459,8 @@ final class BubbleView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor, constant: topInset),
             stack.widthAnchor.constraint(equalToConstant: BubbleView.contentWidth),
         ])
-        // 高度由内容决定
+        // 高度由内容决定：先让子视图按固定宽度排一遍，再量
+        stack.layoutSubtreeIfNeeded()
         let fit = stack.fittingSize
         let h = fit.height + BubbleView.padY * 2 + BubbleView.shadow
         frame.size = NSSize(width: BubbleView.width, height: h)
@@ -476,6 +471,7 @@ final class BubbleView: NSView {
     /// 内容变化后重新量高度（展开输入框时）
     private func remeasure() {
         for c in constraints where c.firstItem === self && c.firstAttribute == .height { c.isActive = false }
+        stack.layoutSubtreeIfNeeded()
         let fit = stack.fittingSize
         let h = fit.height + BubbleView.padY * 2 + BubbleView.shadow
         let oldH = frame.height

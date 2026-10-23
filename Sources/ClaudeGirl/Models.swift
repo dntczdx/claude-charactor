@@ -94,7 +94,12 @@ struct StatusEvent: Decodable {
 final class Conversation {
     let id = UUID()
     var topic: String
+    /// Claude 桌面版侧栏里的真实标题（从窗口标题读到的），跳转时优先用它
+    var sidebarTitle: String?
     var state: ConvState = .idle
+
+    /// 跳转/定位时依次尝试的标题
+    var titlesForLookup: [String] { [sidebarTitle, topic].compactMap { $0 } }
     var headline: String = ""
     var points: [String] = []
     var question: String?
