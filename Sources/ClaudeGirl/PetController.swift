@@ -40,8 +40,6 @@ final class PetController: NSObject {
         startServer()
         bridge.startObserving(onChange: { [weak self] generating, title, chatID in
             self?.axUpdate(generating: generating, title: title, chatID: chatID)
-        }, onSidebar: { [weak self] links in
-            self?.registerSidebar(links)
         })
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
 
@@ -115,7 +113,7 @@ final class PetController: NSObject {
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
         linkToForegroundConversation(c)
-        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID?.prefix(8) ?? "-")")
+        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID ?? "-")")
         cancelAXFallback()
         bump(c)
         recompute()
@@ -227,7 +225,7 @@ final class PetController: NSObject {
         c.unread = false
         if currentBubble === c { hideBubble() }
         if c.chatID == nil { c.chatID = lookupChatID(for: c) }
-        Log.info("open id=\(c.chatID?.prefix(8) ?? "-") titles=\(c.titlesForLookup)")
+        Log.info("open id=\(c.chatID ?? "-") titles=\(c.titlesForLookup)")
         bridge.open(chat: c.chatRef) { [weak self] ok in
             Log.info("open 结果 ok=\(ok)")
             if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }

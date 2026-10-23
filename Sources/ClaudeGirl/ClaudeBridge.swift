@@ -69,10 +69,10 @@ final class ClaudeBridge {
             let titles = chat.titles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             // 有 UUID 就直接用 claude:// 链接跳，不需要辅助功能权限
             var usedDeepLink = false
-            if let id = chat.id, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
+            if let id = chat.id, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai\(id)") {
                 NSWorkspace.shared.open(url)
                 usedDeepLink = true
-                Log.info("跳转 claude://…/chat/\(id.prefix(8)) 已发出")
+                Log.info("跳转 claude://claude.ai\(id) 已发出")
             }
             guard self.isTrusted, chat.id != nil || !titles.isEmpty else { completion(ok); return }
             // 辅助功能可用：核对是否到了，没到再走侧栏 / 搜索
@@ -101,28 +101,23 @@ final class ClaudeBridge {
 
     // MARK: 观察生成状态
 
-    /// 每 1.5s 看一眼：是否在生成、前台对话标题与 UUID；每 ~12s 扫一次侧栏，把「标题 → UUID」交给 onSidebar
-    func startObserving(onChange: @escaping (_ generating: Bool, _ title: String?, _ chatID: String?) -> Void,
-                        onSidebar: @escaping ([(id: String, title: String)]) -> Void) {
+    /// 每 1.5s 看一眼：是否在生成、前台对话标题与 ID（URL 路径）
+    func startObserving(onChange: @escaping (_ generating: Bool, _ title: String?, _ chatID: String?) -> Void) {
         let t = DispatchSource.makeTimerSource(queue: axQueue)
         t.schedule(deadline: .now() + 2, repeating: 1.5)
         t.setEventHandler { [weak self] in
             guard let self, self.isTrusted, self.runningApp != nil else { return }
             self.enableElectronAccessibility()
             guard let win = self.mainWindow() else { return }
-            let generating = self.findStopButton(in: win) != nil
-            let title = self.currentConversationTitle(window: win)
-            let chatID = self.currentChatID(window: win)
+            let web = self.contentWebArea(in: win)
+            let generating = self.findStopButton(in: web ?? win) != nil
+            let title = self.currentConversationTitle(window: win, web: web)
+            let chatID = self.currentChatID(web: web)
             if generating != self.lastGenerating || title != self.lastTitle || chatID != self.lastChatID {
                 self.lastGenerating = generating
                 self.lastTitle = title
                 self.lastChatID = chatID
                 DispatchQueue.main.async { onChange(generating, title, chatID) }
-            }
-            self.tick += 1
-            if self.tick % 8 == 1 {
-                let links = self.sidebarLinks(in: win).map { (id: $0.id, title: $0.title) }
-                if !links.isEmpty { DispatchQueue.main.async { onSidebar(links) } }
             }
         }
         t.resume()
@@ -251,58 +246,79 @@ final class ClaudeBridge {
         return Double(inter) / Double(min(ga.count, gb.count))
     }
 
-    /// 从 URL 里抠出 /chat/<uuid>
+    /// 对话 ID = claude.ai 上的 URL 路径，例如 /chat/<uuid>、/epitaxy/local_xxx（Code 会话）
     static func chatID(from url: String?) -> String? {
-        guard let url, let r = url.range(of: "/chat/") else { return nil }
-        let rest = url[r.upperBound...]
-        let id = rest.prefix { $0.isHexDigit || $0 == "-" }
-        return id.count >= 32 ? String(id).lowercased() : nil
+        guard let url, let u = URL(string: url), let host = u.host, host.contains("claude.ai") else { return nil }
+        let path = u.path
+        let parts = path.split(separator: "/")
+        guard parts.count >= 2 else { return nil }
+        // 排除 /new、/settings 之类
+        let first = parts[0].lowercased()
+        guard ["chat", "epitaxy", "code", "cowork", "project", "session"].contains(first) || parts.count >= 2 else { return nil }
+        if first == "new" || first == "settings" { return nil }
+        return path
     }
 
-    // MARK: 读取：标题 / 当前 UUID / 侧栏链接
+    // MARK: 读取：网页区 / 标题 / 当前 ID / 侧栏按钮
 
-    /// 窗口标题通常是「对话标题 - Claude」
-    private func currentConversationTitle(window: AXUIElement) -> String? {
-        guard var t = str(window, kAXTitleAttribute)?.trimmingCharacters(in: .whitespaces), !t.isEmpty else { return nil }
-        for suffix in [" - Claude", " – Claude", " | Claude", " — Claude", "- Claude"] {
-            if t.hasSuffix(suffix) { t = String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces) }
+    /// Claude 桌面版是 Electron 壳：外层一个 file:// 的网页区，里面才是 https://claude.ai 的内容区
+    private func contentWebArea(in window: AXUIElement) -> AXUIElement? {
+        var best: AXUIElement?
+        var fallback: AXUIElement?
+        walk(window, maxNodes: 1200, maxDepth: 16) { el, _ in
+            guard self.role(el) == "AXWebArea" else { return false }
+            let u = self.urlString(el) ?? ""
+            if u.hasPrefix("http") { best = el; return true }
+            if fallback == nil { fallback = el }
+            return false
         }
-        if t.isEmpty || t == "Claude" || t == "New chat" || t == "新对话" { return nil }
+        return best ?? fallback
+    }
+
+    /// 内容区的标题是「对话标题 - Claude」或「会话名 - Claude Code」；窗口标题只是 "Claude"
+    private func currentConversationTitle(window: AXUIElement, web: AXUIElement?) -> String? {
+        var raw = web.flatMap { str($0, kAXTitleAttribute) } ?? ""
+        if raw.isEmpty { raw = str(window, kAXTitleAttribute) ?? "" }
+        var t = raw.trimmingCharacters(in: .whitespaces)
+        for suffix in [" - Claude Code", " – Claude Code", " - Claude", " – Claude", " | Claude", " — Claude", "- Claude"] {
+            if t.hasSuffix(suffix) { t = String(t.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces); break }
+        }
+        if t.isEmpty || t == "Claude" || t == "New chat" || t == "新对话" || t == "Claude Code" { return nil }
         return t
     }
 
-    private func webArea(in window: AXUIElement) -> AXUIElement? {
-        var found: AXUIElement?
-        walk(window, maxNodes: 400, maxDepth: 12) { el, _ in
-            if self.role(el) == "AXWebArea" { found = el; return true }
-            return false
-        }
-        return found
-    }
-
-    /// 网页区的 AXURL 就是当前页面地址，里面有对话 UUID
-    private func currentChatID(window: AXUIElement) -> String? {
-        guard let web = webArea(in: window) else { return nil }
+    /// 内容区的 AXURL 就是当前页面地址
+    private func currentChatID(web: AXUIElement?) -> String? {
+        guard let web else { return nil }
         if let id = Self.chatID(from: urlString(web)) { return id }
         if let doc = str(web, "AXDocument"), let id = Self.chatID(from: doc) { return id }
         return nil
     }
 
-    private struct SidebarLink {
-        let id: String
+    private struct SidebarItem {
         let title: String
         let element: AXUIElement
     }
 
-    /// 侧栏里所有指向 /chat/<uuid> 的链接
-    private func sidebarLinks(in window: AXUIElement) -> [SidebarLink] {
-        var out: [SidebarLink] = []
-        var seen = Set<String>()
-        walk(window) { el, _ in
-            guard self.role(el) == "AXLink", let id = Self.chatID(from: self.urlString(el)) else { return false }
-            guard !seen.contains(id) else { return false }
-            seen.insert(id)
-            out.append(SidebarLink(id: id, title: self.deepText(el), element: el))
+    /// 侧栏（desc=Sidebar 的地标）里的对话按钮：标题就是对话名
+    private func sidebarItems(in window: AXUIElement) -> [SidebarItem] {
+        var sidebar: AXUIElement?
+        walk(window, maxNodes: 3000, maxDepth: 30) { el, _ in
+            if self.role(el) == "AXGroup", (self.str(el, kAXDescriptionAttribute) ?? "").lowercased() == "sidebar" {
+                sidebar = el
+                return true
+            }
+            return false
+        }
+        let root = sidebar ?? window
+        var out: [SidebarItem] = []
+        walk(root, maxNodes: 4000, maxDepth: 30) { el, _ in
+            guard self.role(el) == "AXButton", let t = self.str(el, kAXTitleAttribute), !t.isEmpty else { return false }
+            // 排掉功能按钮
+            let lower = t.lowercased()
+            if ["new", "artifacts", "on-call", "customize", "environment"].contains(lower) || lower.hasPrefix("context ") || lower.hasPrefix("connectors") { return false }
+            if lower.hasPrefix("you said") || lower.hasPrefix("claude responded") { return false }
+            out.append(SidebarItem(title: t, element: el))
             return false
         }
         return out
@@ -318,6 +334,9 @@ final class ClaudeBridge {
             lines.append("window title: \(self.str(win, kAXTitleAttribute) ?? "-")")
             lines.append("window document: \(self.str(win, "AXDocument") ?? "-")")
             lines.append("window url: \(self.urlString(win) ?? "-")")
+            if let web = self.contentWebArea(in: win) {
+                lines.append("content title: \(self.str(web, kAXTitleAttribute) ?? "-") | url: \(self.urlString(web) ?? "-") | id: \(self.currentChatID(web: web) ?? "-")")
+            }
             var n = 0
             self.walk(win, maxNodes: 6000, maxDepth: 60) { el, depth in
                 n += 1
@@ -348,69 +367,62 @@ final class ClaudeBridge {
 
     private func navigate(to id: String?, titles: [String], deepLinkTried: Bool = false) -> Bool {
         guard let win0 = mainWindow() else { return false }
-        let curID = currentChatID(window: win0)
-        let curTitle = currentConversationTitle(window: win0)
-        Log.info("跳转 目标id=\(id?.prefix(8) ?? "-") titles=\(titles) 当前id=\(curID?.prefix(8) ?? "-") 当前标题=\(curTitle ?? "-")")
+        let web0 = contentWebArea(in: win0)
+        let curID = currentChatID(web: web0)
+        let curTitle = currentConversationTitle(window: win0, web: web0)
+        Log.info("跳转 目标id=\(id ?? "-") titles=\(titles) 当前id=\(curID ?? "-") 当前标题=\(curTitle ?? "-")")
 
         // 1. 已经在这条对话上
         if let id, curID == id { return true }
         if id == nil, let cur = curTitle, titles.contains(where: { Self.similarity($0, cur) >= 0.8 }) { return true }
 
         // 2. claude:// 链接（open(chat:) 里没发过才发）
-        if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
+        if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai\(id)") {
             DispatchQueue.main.sync { _ = NSWorkspace.shared.open(url) }
-            Thread.sleep(forTimeInterval: 1.4)
-            if let w = mainWindow(), currentChatID(window: w) == id {
+            if verifyArrived(id: id, titles: titles, wait: 1.4) {
                 Log.info("跳转 claude:// 成功")
                 return true
             }
             Log.info("跳转 claude:// 未命中")
         }
 
-        // 3. 侧栏按 UUID 精确匹配
-        let links = sidebarLinks(in: win0)
-        Log.info("侧栏链接 \(links.count) 条")
-        if let id, let link = links.first(where: { $0.id == id }) {
-            if press(elementOrAncestor: link.element), verifyArrived(id: id, titles: titles) {
-                Log.info("跳转 侧栏按 UUID 成功")
-                return true
-            }
-        }
-
-        // 4. 侧栏按标题（要求很像）
+        // 3. 侧栏按钮按标题（要求很像）
         if !titles.isEmpty {
-            let scored = links.map { l in (l, titles.map { Self.similarity($0, l.title) }.max() ?? 0) }
-                .filter { $0.1 >= 0.7 }
+            let items = sidebarItems(in: win0)
+            Log.info("侧栏对话按钮 \(items.count) 个")
+            let scored = items.map { it in (it, titles.map { Self.similarity($0, it.title) }.max() ?? 0) }
+                .filter { $0.1 >= 0.75 }
                 .sorted { $0.1 > $1.1 }
-            for (l, s) in scored.prefix(2) {
-                if press(elementOrAncestor: l.element), verifyArrived(id: id, titles: titles) {
-                    Log.info("跳转 侧栏按标题成功（相似度 \(String(format: "%.2f", s))：\(l.title)）")
+            for (it, sc) in scored.prefix(2) {
+                if press(elementOrAncestor: it.element), verifyArrived(id: id, titles: titles + [it.title], wait: 0.8) {
+                    Log.info("跳转 侧栏按标题成功（相似度 \(String(format: "%.2f", sc))：\(it.title)）")
                     return true
                 }
             }
         }
 
-        // 5. ⌘K 搜索
+        // 4. ⌘K 搜索
         if let q = titles.first {
             return searchAndOpen(query: q, id: id, titles: titles)
         }
         return false
     }
 
-    /// 点完等页面切换，再核对 UUID 或标题
-    private func verifyArrived(id: String?, titles: [String]) -> Bool {
-        Thread.sleep(forTimeInterval: 0.7)
+    /// 点完等页面切换，再核对 ID 或标题
+    private func verifyArrived(id: String?, titles: [String], wait: TimeInterval) -> Bool {
+        Thread.sleep(forTimeInterval: wait)
         guard let w = mainWindow() else { return false }
-        if let id, let cur = currentChatID(window: w) { return cur == id }
-        if let cur = currentConversationTitle(window: w) {
+        let web = contentWebArea(in: w)
+        if let id, let cur = currentChatID(web: web) { return cur == id }
+        if let cur = currentConversationTitle(window: w, web: web) {
             return titles.contains(where: { Self.similarity($0, cur) >= 0.7 })
         }
         return false
     }
 
-    private func findStopButton(in window: AXUIElement) -> AXUIElement? {
+    private func findStopButton(in root: AXUIElement) -> AXUIElement? {
         var found: AXUIElement?
-        walk(window) { el, _ in
+        walk(root) { el, _ in
             guard self.role(el) == "AXButton" else { return false }
             let joined = self.texts(el).joined(separator: " ").lowercased()
             if joined.contains("stop") || joined.contains("停止") {
@@ -452,7 +464,7 @@ final class ClaudeBridge {
         pasteText(query)
         Thread.sleep(forTimeInterval: 1.0)
         postKey(36, flags: [])                           // ↩︎
-        let ok = verifyArrived(id: id, titles: titles)
+        let ok = verifyArrived(id: id, titles: titles, wait: 1.0)
         Log.info("⌘K 搜索「\(query)」结果 ok=\(ok)")
         if !ok { postKey(53, flags: []) }                // ⎋ 收起搜索框
         return ok
