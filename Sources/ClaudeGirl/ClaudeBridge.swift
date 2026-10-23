@@ -22,6 +22,7 @@ final class ClaudeBridge {
     private var lastChatID: String?
     private var enabledPID: pid_t = 0
     private var tick = 0
+    private var stopMissCount = 0
 
     var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -101,18 +102,28 @@ final class ClaudeBridge {
 
     // MARK: 观察生成状态
 
-    /// 每 1.5s 看一眼：是否在生成、前台对话标题与 UUID；每 ~12s 扫一次侧栏，把「标题 → UUID」交给 onSidebar
+    struct SidebarRow {
+        let id: String?
+        let title: String
+        let status: String?
+        let busy: Bool
+    }
+
+    /// 每 1.5s 看一眼：是否在生成、前台对话标题与 ID；每 3s 扫一次侧栏，把所有对话行（标题、ID、状态前缀）交给 onSidebar
     func startObserving(onChange: @escaping (_ generating: Bool, _ title: String?, _ chatID: String?) -> Void,
-                        onSidebar: @escaping ([(id: String, title: String)]) -> Void) {
+                        onSidebar: @escaping ([SidebarRow]) -> Void) {
         let t = DispatchSource.makeTimerSource(queue: axQueue)
         t.schedule(deadline: .now() + 2, repeating: 1.5)
         t.setEventHandler { [weak self] in
             guard let self, self.isTrusted, self.runningApp != nil else { return }
             self.enableElectronAccessibility()
             guard let win = self.mainWindow() else { return }
-            let generating = self.findStopButton(in: win) != nil
             let title = self.currentConversationTitle(window: win)
             let chatID = self.currentChatID(window: win)
+            // 「停止」按钮偶尔会读不到（页面重排、思考中换了控件），连续 2 次没看到才算结束
+            let stopSeen = self.findStopButton(in: win) != nil
+            if stopSeen { self.stopMissCount = 0 } else { self.stopMissCount += 1 }
+            let generating = stopSeen || (self.lastGenerating && self.stopMissCount < 2 && title == self.lastTitle)
             if generating != self.lastGenerating || title != self.lastTitle || chatID != self.lastChatID {
                 self.lastGenerating = generating
                 self.lastTitle = title
@@ -120,9 +131,9 @@ final class ClaudeBridge {
                 DispatchQueue.main.async { onChange(generating, title, chatID) }
             }
             self.tick += 1
-            if self.tick % 8 == 1 {
-                let links = self.sidebarLinks(in: win).compactMap { l in l.id.map { (id: $0, title: l.title) } }
-                if !links.isEmpty { DispatchQueue.main.async { onSidebar(links) } }
+            if self.tick % 2 == 1 {
+                let rows = self.sidebarLinks(in: win).map { SidebarRow(id: $0.id, title: $0.title, status: $0.status, busy: $0.busy) }
+                if !rows.isEmpty { DispatchQueue.main.async { onSidebar(rows) } }
             }
         }
         t.resume()
@@ -254,6 +265,7 @@ final class ClaudeBridge {
     /// 从页面 URL 里抠出对话 ID。两种页面：
     /// - 聊天：claude.ai/chat/<uuid> → "chat/<uuid>"
     /// - Code：claude.ai/epitaxy/local_<uuid> → "epitaxy/local_<uuid>"
+    /// - Cowork：claude.ai/cowork/cse_<id> → "cowork/cse_<id>"
     /// 这个 ID 拼上 claude://claude.ai/ 就是深链接。
     static func chatID(from url: String?) -> String? {
         guard let url else { return nil }
@@ -261,9 +273,12 @@ final class ClaudeBridge {
             let id = url[r.upperBound...].prefix { $0.isHexDigit || $0 == "-" }
             if id.count >= 32 { return "chat/" + String(id).lowercased() }
         }
-        if let r = url.range(of: "/epitaxy/") {
-            let id = url[r.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-            if id.count >= 8 { return "epitaxy/" + String(id) }
+        // Code 会话 /epitaxy/local_…、Cowork 会话 /cowork/cse_…、云端会话 /code/…
+        for seg in ["epitaxy", "cowork", "code"] {
+            if let r = url.range(of: "/\(seg)/") {
+                let id = url[r.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+                if id.count >= 8 { return seg + "/" + String(id) }
+            }
         }
         return nil
     }
@@ -333,16 +348,26 @@ final class ClaudeBridge {
         return nil
     }
 
-    private struct SidebarLink {
-        let id: String?          // 聊天页的链接带 UUID；Code 页的会话按钮没有，只能按标题
+    struct SidebarLink {
+        let id: String?          // 聊天页旧版链接带 UUID；现在的会话/对话行是按钮，没有 ID，只能按标题
         let title: String
+        let status: String?      // 聊天页行按钮的标题前缀（"Mark as unread" / "Idle" / 生成中的状态字样）
         let element: AXUIElement
+
+        /// 行前缀是否表示正在生成
+        var busy: Bool {
+            guard let st = status?.lowercased(), !st.isEmpty else { return false }
+            return ["working", "running", "generating", "thinking", "writing", "in progress", "responding", "正在", "生成中", "运行中", "思考"]
+                .contains { st.contains($0) }
+        }
     }
 
     /// 侧栏里的对话入口：
-    /// - 聊天页：指向 /chat/<uuid> 的 AXLink
-    /// - Code 页：会话行是 AXButton（title=会话名），旁边有「More options for <会话名>」的弹出按钮，用它来区分导航按钮
-    private func sidebarLinks(in window: AXUIElement) -> [SidebarLink] {
+    /// - 旧版聊天页：指向 /chat/<uuid> 的 AXLink
+    /// - Code 页：会话行是 AXButton（title=会话名）
+    /// - 聊天页：对话行是 AXButton，title=「<状态> <对话名>」（"Mark as unread xxx" / "Idle xxx" / 生成中的状态…）
+    /// 两种行旁边都有「More options for <名字>」的弹出按钮，用它来区分导航按钮并切出状态前缀
+    func sidebarLinks(in window: AXUIElement) -> [SidebarLink] {
         var out: [SidebarLink] = []
         var seen = Set<String>()
         var buttons: [(title: String, element: AXUIElement)] = []
@@ -352,7 +377,7 @@ final class ClaudeBridge {
             if r == "AXLink", let id = Self.chatID(from: self.urlString(el)) {
                 if !seen.contains(id) {
                     seen.insert(id)
-                    out.append(SidebarLink(id: id, title: self.deepText(el), element: el))
+                    out.append(SidebarLink(id: id, title: self.deepText(el), status: nil, element: el))
                 }
             } else if r == "AXButton", let t = self.str(el, kAXTitleAttribute)?.trimmingCharacters(in: .whitespaces), !t.isEmpty {
                 buttons.append((t, el))
@@ -364,9 +389,20 @@ final class ClaudeBridge {
             return false
         }
         var seenTitles = Set<String>()
-        for b in buttons where rowTitles.contains(b.title) && !seenTitles.contains(b.title) {
-            seenTitles.insert(b.title)
-            out.append(SidebarLink(id: nil, title: b.title, element: b.element))
+        // 长标题优先匹配，避免「xxx」被「yyy xxx」的后缀误配
+        let sortedTitles = rowTitles.sorted { $0.count > $1.count }
+        for b in buttons {
+            var matched: String?
+            var status: String?
+            if rowTitles.contains(b.title) {
+                matched = b.title
+            } else if let t = sortedTitles.first(where: { b.title.hasSuffix(" " + $0) }) {
+                matched = t
+                status = String(b.title.dropLast(t.count)).trimmingCharacters(in: .whitespaces)
+            }
+            guard let t = matched, !seenTitles.contains(t) else { continue }
+            seenTitles.insert(t)
+            out.append(SidebarLink(id: nil, title: t, status: status, element: b.element))
         }
         return out
     }
@@ -442,21 +478,56 @@ final class ClaudeBridge {
         }
 
         // 4. 侧栏按标题（要求很像）
-        if !titles.isEmpty {
-            let scored = links.map { l in (l, titles.map { Self.similarity($0, l.title) }.max() ?? 0) }
-                .filter { $0.1 >= 0.7 }
-                .sorted { $0.1 > $1.1 }
-            for (l, s) in scored.prefix(2) {
-                if press(elementOrAncestor: l.element), verifyArrived(id: id, titles: titles) {
-                    Log.info("跳转 侧栏按标题成功（相似度 \(String(format: "%.2f", s))：\(l.title)）")
-                    return true
-                }
+        if pressRow(matching: titles, in: links, id: id) { return true }
+
+        // 4.5 侧栏里没有：聊天/Cowork 和 Code 两个模式的侧栏互不显示，切到另一个模式再找一次
+        if !titles.isEmpty, switchSidebarMode(in: win0) {
+            Thread.sleep(forTimeInterval: 0.9)
+            if let w = mainWindow() {
+                let links2 = sidebarLinks(in: w)
+                Log.info("切换侧栏模式后 \(links2.count) 条")
+                if pressRow(matching: titles, in: links2, id: id) { return true }
             }
         }
 
         // 5. ⌘K 搜索
         if let q = titles.first {
             return searchAndOpen(query: q, id: id, titles: titles)
+        }
+        return false
+    }
+
+    /// 在侧栏行里按标题找最像的（≥ 0.7），点它并核对
+    private func pressRow(matching titles: [String], in links: [SidebarLink], id: String?) -> Bool {
+        guard !titles.isEmpty else { return false }
+        let scored = links.map { l in (l, titles.map { Self.similarity($0, l.title) }.max() ?? 0) }
+            .filter { $0.1 >= 0.7 }
+            .sorted { $0.1 > $1.1 }
+        for (l, s) in scored.prefix(2) {
+            if press(elementOrAncestor: l.element), verifyArrived(id: id, titles: titles + [l.title]) {
+                Log.info("跳转 侧栏按标题成功（相似度 \(String(format: "%.2f", s))：\(l.title)）")
+                return true
+            }
+        }
+        return false
+    }
+
+    /// 侧栏顶部的「Mode」单选组（Chat and Cowork / Code）：按下当前没选中的那个
+    private func switchSidebarMode(in window: AXUIElement) -> Bool {
+        var group: AXUIElement?
+        walk(window, maxNodes: 3000, maxDepth: 30) { el, _ in
+            if self.role(el) == "AXRadioGroup", (self.str(el, kAXDescriptionAttribute) ?? "").lowercased() == "mode" { group = el; return true }
+            return false
+        }
+        guard let group else { return false }
+        for b in children(group) where role(b) == "AXRadioButton" {
+            let selected = (attr(b, kAXValueAttribute) as? Int) == 1 || (attr(b, kAXValueAttribute) as? Bool) == true
+            if !selected {
+                let ok = AXUIElementPerformAction(b, kAXPressAction as CFString) == .success
+                if !ok, let p = centerPoint(of: b) { clickAt(p) }
+                Log.info("切换侧栏模式 → \(self.str(b, kAXDescriptionAttribute) ?? "?")")
+                return true
+            }
         }
         return false
     }
@@ -477,7 +548,7 @@ final class ClaudeBridge {
         walk(window) { el, _ in
             guard self.role(el) == "AXButton" else { return false }
             let joined = self.texts(el).joined(separator: " ").lowercased()
-            if joined.contains("stop") || joined.contains("停止") {
+            if joined.contains("stop") || joined.contains("停止") || joined.contains("取消生成") || joined.contains("cancel generation") {
                 found = el
                 return true
             }

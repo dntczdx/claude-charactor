@@ -40,8 +40,8 @@ final class PetController: NSObject {
         startServer()
         bridge.startObserving(onChange: { [weak self] generating, title, chatID in
             self?.axUpdate(generating: generating, title: title, chatID: chatID)
-        }, onSidebar: { [weak self] links in
-            self?.registerSidebar(links)
+        }, onSidebar: { [weak self] rows in
+            self?.sidebarUpdate(rows)
         })
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
         startRegistryPolling()
@@ -146,11 +146,21 @@ final class PetController: NSObject {
             c.chatID = s.chatID
             if !s.name.isEmpty { c.sidebarTitle = s.name }
             Log.info("notify 绑定到 Code 会话 \(s.hostID.prefix(14)) 「\(s.name)」")
+        } else if c.chatID == nil, sidebarBusyTitles.count == 1, let t = sidebarBusyTitles.first {
+            if let other = conversations.first(where: { $0 !== c && $0.sidebarTitle == t }) {
+                conversations.removeAll { $0 === other }
+                if axConversation === other { axConversation = c }
+                if c.chatID == nil { c.chatID = other.chatID }
+            }
+            c.sidebarTitle = t
+            Log.info("notify 绑定到侧栏正在生成的对话「\(t)」")
         }
         linkToForegroundConversation(c)
         Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID.map(Self.shortID) ?? "-")")
         cancelAXFallback()
-        if let id = c.chatID { fallbackTimers.removeValue(forKey: id)?.invalidate() }
+        for key in fallbackTimers.keys where activeKeys[key] === c || key == c.chatID || key == "row:" + (c.sidebarTitle ?? "") {
+            fallbackTimers.removeValue(forKey: key)?.invalidate()
+        }
         bump(c)
         recompute()
         return id
@@ -314,6 +324,7 @@ final class PetController: NSObject {
     private var registryTimer: Timer?
     private var registryBusy: Set<String> = []
     private var fallbackTimers: [String: Timer] = [:]
+    private var activeKeys: [String: Conversation] = [:]
 
     private func startRegistryPolling() {
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in self?.pollRegistry() }
@@ -340,16 +351,29 @@ final class PetController: NSObject {
 
     /// 已经按 ID / 标题记过的对话；没有就按侧栏标题建一条
     private func conversation(for s: CodeSession) -> Conversation {
-        if let c = conversations.first(where: { $0.chatID == s.chatID }) { return c }
-        let c = conversation(forTopic: s.name.isEmpty ? s.hostID : s.name)
-        c.chatID = s.chatID
-        if !s.name.isEmpty, c.sidebarTitle == nil { c.sidebarTitle = s.name }
+        conversation(id: s.chatID, title: s.name)
+    }
+
+    private func conversation(id: String?, title: String) -> Conversation {
+        if let id, let c = conversations.first(where: { $0.chatID == id }) { return c }
+        if let c = conversations.first(where: { $0.sidebarTitle == title }) {
+            if c.chatID == nil { c.chatID = id }
+            return c
+        }
+        let c = conversation(forTopic: title.isEmpty ? (id ?? "当前对话") : title)
+        if c.chatID == nil { c.chatID = id }
+        if !title.isEmpty, c.sidebarTitle == nil { c.sidebarTitle = title }
         return c
     }
 
-    private func sessionStarted(_ s: CodeSession) {
-        let c = conversation(for: s)
-        fallbackTimers.removeValue(forKey: s.chatID)?.invalidate()
+    private func sessionStarted(_ s: CodeSession) { activityStarted(key: s.chatID, id: s.chatID, title: s.name) }
+    private func sessionFinished(_ s: CodeSession) { activityFinished(key: s.chatID) }
+
+    /// 某条对话开始生成（来自 Code 登记表或聊天页侧栏行的状态前缀）
+    private func activityStarted(key: String, id: String?, title: String) {
+        let c = conversation(id: id, title: title)
+        activeKeys[key] = c
+        fallbackTimers.removeValue(forKey: key)?.invalidate()
         let justNotified = c.requestId != nil && c.state.showsBubble && Date().timeIntervalSince(c.updatedAt) < 90
         guard c.state != .working && c.state != .thinking && !justNotified else { return }
         c.state = .thinking
@@ -364,12 +388,16 @@ final class PetController: NSObject {
         recompute()
     }
 
-    private func sessionFinished(_ s: CodeSession) {
-        guard let c = conversations.first(where: { $0.chatID == s.chatID }), c.state == .working || c.state == .thinking else { return }
+    private func activityFinished(key: String) {
+        guard let c = activeKeys.removeValue(forKey: key), c.state == .working || c.state == .thinking else { return }
         // 生成结束：给 MCP 的 notify 4 秒时间；没来就用兜底的完成提醒
-        fallbackTimers[s.chatID]?.invalidate()
+        fallbackTimers[key]?.invalidate()
         let t = Timer(timeInterval: 4, repeats: false) { [weak self, weak c] _ in
             guard let self, let c, c.state == .working || c.state == .thinking else { return }
+            if self.stillBusyElsewhere(title: c.sidebarTitle ?? c.topic, chatID: c.chatID) || (self.axConversation === c && self.bridgeGenerating) {
+                Log.info("兜底提醒取消：\(c.topic) 还在生成")
+                return
+            }
             c.state = .done
             c.headline = "这条回复写完了"
             c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]
@@ -382,7 +410,28 @@ final class PetController: NSObject {
             self.recompute()
         }
         RunLoop.main.add(t, forMode: .common)
-        fallbackTimers[s.chatID] = t
+        fallbackTimers[key] = t
+    }
+
+    // MARK: 聊天页侧栏行（辅助功能扫出来的：标题 + 状态前缀）
+
+    private var sidebarBusyTitles: Set<String> = []
+    private var loggedStatuses: Set<String> = []
+
+    private func sidebarUpdate(_ rows: [ClaudeBridge.SidebarRow]) {
+        registerSidebar(rows.compactMap { r in r.id.map { (id: $0, title: r.title) } })
+        var busyNow = Set<String>()
+        for r in rows {
+            if let st = r.status, !st.isEmpty, !loggedStatuses.contains(st) {
+                loggedStatuses.insert(st)
+                Log.info("侧栏行状态前缀「\(st)」（busy=\(r.busy)）")
+            }
+            guard r.busy else { continue }
+            busyNow.insert(r.title)
+            if !sidebarBusyTitles.contains(r.title) { activityStarted(key: "row:" + r.title, id: r.id, title: r.title) }
+        }
+        for t in sidebarBusyTitles where !busyNow.contains(t) { activityFinished(key: "row:" + t) }
+        sidebarBusyTitles = busyNow
     }
 
     // MARK: 辅助功能观察到的生成状态
@@ -417,7 +466,16 @@ final class PetController: NSObject {
         return best?.0
     }
 
-    private func axUpdate(generating: Bool, title: String?, chatID: String?) {
+    /// 除了前台的「停止」按钮，侧栏行状态（Running…）和 Code 登记表也能说明这条对话还在生成
+    private func stillBusyElsewhere(title: String?, chatID: String?) -> Bool {
+        if let title, sidebarBusyTitles.contains(title) { return true }
+        if let chatID, registryBusy.contains(chatID) { return true }
+        return false
+    }
+
+    private func axUpdate(generating rawGenerating: Bool, title: String?, chatID: String?) {
+        let generating = rawGenerating || stillBusyElsewhere(title: title, chatID: chatID)
+        if generating != bridgeGenerating { Log.info("前台 \(title ?? "-") 生成中=\(generating)（停止按钮=\(rawGenerating)）") }
         bridgeGenerating = generating
         if let title, let chatID {
             var reg = Settings.shared.chatRegistry
@@ -453,6 +511,10 @@ final class PetController: NSObject {
             axFallbackTimer?.invalidate()
             let t = Timer(timeInterval: 4, repeats: false) { [weak self, weak c] _ in
                 guard let self, let c, c.state == .working || c.state == .thinking else { return }
+                if self.bridgeGenerating || self.stillBusyElsewhere(title: c.sidebarTitle ?? c.topic, chatID: c.chatID) {
+                    Log.info("兜底提醒取消：\(c.topic) 还在生成")
+                    return
+                }
                 c.state = .done
                 c.headline = "这条回复写完了"
                 c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]

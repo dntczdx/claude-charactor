@@ -82,9 +82,12 @@ scripts/install-mcp.sh
      （侧栏标题 `name`、桌面版会话 ID `hostSessionId`、是否正在生成 `status`）。app 每 1.5 秒读一遍：
      正在生成的那条就是发 `notify` 的那条（几条同时在生成时，再看谁的对话记录里出现了这次的 headline）；
      跳转直接打开 `claude://claude.ai/epitaxy/<hostSessionId>`，不需要辅助功能权限；「正在写…」姿态也来自这里。
-   - **聊天页的对话**（claude.ai/chat）：靠辅助功能 API 读网页区 URL 里的 `/chat/<uuid>` 和侧栏链接，
-     跳转用 `claude://claude.ai/chat/<uuid>`；侧栏按 UUID / 标题点、⌘K 搜索作为兜底。
-   - 生成结束 4 秒内没收到 `notify`，就用兜底的「这条回复写完了」气泡提醒你。
+   - **聊天 / Cowork 页的对话**（claude.ai/chat/<uuid>、claude.ai/cowork/cse_…）：靠辅助功能 API 读内容区 URL 得到 ID，
+     看过一次就记进登记表，之后用 `claude://claude.ai/<路径>` 直达；没见过的对话按侧栏行标题点
+     （Code 页和聊天页的侧栏互不显示，找不到会先切换侧栏模式再找），最后才用 ⌘K 搜索兜底。
+     侧栏行标题前缀（Running / Idle / Mark as unread…）同时用来判断哪条对话正在生成。
+   - **是否还在生成**：前台看「停止」按钮（连续两次读不到才算结束），再对照侧栏行状态和 Code 登记表；
+     三者都说结束，4 秒内没收到 `notify`，才弹兜底的「这条回复写完了」。
 
 本地接口（只监听 127.0.0.1，端口 47333）：
 
