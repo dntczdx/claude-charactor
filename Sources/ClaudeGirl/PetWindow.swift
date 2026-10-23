@@ -19,4 +19,10 @@ final class PetWindow: NSWindow {
     /// 气泡里有输入框，需要能成为 key window
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// 系统默认不让窗口上边越过屏幕顶部；这个窗口大部分是透明的（上方留给气泡），
+    /// 人物在底部，所以要放开，否则人物只能升到「屏幕顶 − 380pt」。
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
 }
