@@ -51,6 +51,9 @@ final class ClipLibrary {
         rescan()
     }
 
+    /// 支持两种形态：<代号>/001.png… 帧目录，或 <代号>.webp / .gif / .png（动图单文件，ImageIO 解码）
+    static let animatedExtensions: Set<String> = ["webp", "gif", "png", "apng", "heics"]
+
     func rescan() {
         available = []
         guard let dir = AssetLocator.clipsDirectory,
@@ -58,6 +61,8 @@ final class ClipLibrary {
         for u in items {
             if (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                 available.insert(u.lastPathComponent)
+            } else if Self.animatedExtensions.contains(u.pathExtension.lowercased()) {
+                available.insert(u.deletingPathExtension().lastPathComponent)
             }
         }
     }
@@ -88,7 +93,17 @@ final class ClipLibrary {
     }
 
     private func decode(_ name: String) -> Clip? {
-        guard let dir = AssetLocator.clipsDirectory?.appendingPathComponent(name) else { return nil }
+        guard let root = AssetLocator.clipsDirectory else { return nil }
+        let dir = root.appendingPathComponent(name)
+        var isDir: ObjCBool = false
+        if !(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir) && isDir.boolValue) {
+            // 单文件动图
+            for ext in ["webp", "gif", "apng", "png", "heics"] {
+                let f = root.appendingPathComponent("\(name).\(ext)")
+                if FileManager.default.fileExists(atPath: f.path) { return decodeAnimated(f, name: name) }
+            }
+            return nil
+        }
         let exts: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "tif", "tiff"]
         let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
             .filter { exts.contains($0.pathExtension.lowercased()) }
@@ -102,6 +117,40 @@ final class ClipLibrary {
             frames.append(img)
         }
         return frames.isEmpty ? nil : Clip(name: name, frames: frames, fps: fps)
+    }
+
+    /// 用 ImageIO 把动图（WebP / GIF / APNG）的每一帧解出来
+    private func decodeAnimated(_ url: URL, name: String) -> Clip? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let count = CGImageSourceGetCount(src)
+        guard count > 0 else { return nil }
+        var frames: [CGImage] = []
+        frames.reserveCapacity(count)
+        let opts = [kCGImageSourceShouldCache: true] as CFDictionary
+        for i in 0..<count {
+            if let img = CGImageSourceCreateImageAtIndex(src, i, opts) { frames.append(img) }
+        }
+        guard !frames.isEmpty else { return nil }
+        // 帧率：读第一帧的延时，读不到就按默认
+        var clipFPS = fps
+        if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
+            let dicts: [[CFString: Any]?] = [
+                props[kCGImagePropertyWebPDictionary] as? [CFString: Any],
+                props[kCGImagePropertyGIFDictionary] as? [CFString: Any],
+                props[kCGImagePropertyPNGDictionary] as? [CFString: Any],
+            ]
+            for d in dicts {
+                guard let d else { continue }
+                let delay = (d[kCGImagePropertyWebPUnclampedDelayTime] as? Double)
+                    ?? (d[kCGImagePropertyWebPDelayTime] as? Double)
+                    ?? (d[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+                    ?? (d[kCGImagePropertyGIFDelayTime] as? Double)
+                    ?? (d[kCGImagePropertyAPNGUnclampedDelayTime] as? Double)
+                    ?? (d[kCGImagePropertyAPNGDelayTime] as? Double)
+                if let delay, delay > 0.005 { clipFPS = min(max(1.0 / delay, 4), 30); break }
+            }
+        }
+        return Clip(name: name, frames: frames, fps: clipFPS)
     }
 
     private func store(_ clip: Clip) {

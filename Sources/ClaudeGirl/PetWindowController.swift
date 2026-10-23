@@ -35,10 +35,17 @@ final class PetWindowController: NSObject {
 
         content.frame = NSRect(origin: .zero, size: PetWindowController.windowSize)
         content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.clear.cgColor
+        content.layer?.isOpaque = false
         window.contentView = content
+        // 再设一遍：contentView 换掉后保证窗口仍是透明的
+        window.isOpaque = false
+        window.backgroundColor = .clear
 
         spriteHost.frame = NSRect(origin: PetWindowController.spriteOrigin, size: PetWindowController.spriteSize)
         spriteHost.wantsLayer = true
+        spriteHost.layer?.backgroundColor = NSColor.clear.cgColor
+        spriteHost.layer?.isOpaque = false
         spriteHost.layer?.masksToBounds = false
         player.layer.frame = spriteHost.bounds
         spriteHost.layer?.addSublayer(player.layer)

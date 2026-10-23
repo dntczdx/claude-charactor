@@ -1,7 +1,8 @@
 .build/
 build/
 Assets/raw/
-Assets/clips/
+# 拆出来的帧目录不进仓库；仓库里带的是 Assets/clips/*.webp（带透明通道的动图）
+Assets/clips/*/
 mcp/node_modules/
 mcp/*.mcpb
 .DS_Store
