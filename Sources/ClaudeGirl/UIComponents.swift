@@ -448,20 +448,18 @@ final class BubbleView: NSView {
         addSubview(stack)
     }
 
+    /// 内容栈的位置直接用 frame 定死（视图是 isFlipped，y 从顶部算），不靠外部约束
+    private var contentOrigin: NSPoint {
+        NSPoint(x: (tailOnRight ? 0 : BubbleView.tail) + BubbleView.padX, y: BubbleView.padY)
+    }
+
     private func layoutContent() {
-        let body = bodyRect
-        NSLayoutConstraint.deactivate(stack.constraints.filter { $0.firstItem === stack && $0.secondItem === self })
-        stack.removeConstraints(stack.constraints.filter { $0.firstItem === stack && ($0.firstAttribute == .leading || $0.firstAttribute == .top) })
-        let leading = body.minX + BubbleView.padX
-        let topInset = BubbleView.padY
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: leading),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: topInset),
-            stack.widthAnchor.constraint(equalToConstant: BubbleView.contentWidth),
-        ])
-        // 高度由内容决定：先让子视图按固定宽度排一遍，再量
+        stack.translatesAutoresizingMaskIntoConstraints = true
+        stack.autoresizingMask = []
+        stack.frame = NSRect(x: contentOrigin.x, y: contentOrigin.y, width: BubbleView.contentWidth, height: 10)
         stack.layoutSubtreeIfNeeded()
         let fit = stack.fittingSize
+        stack.frame = NSRect(x: contentOrigin.x, y: contentOrigin.y, width: BubbleView.contentWidth, height: fit.height)
         let h = fit.height + BubbleView.padY * 2 + BubbleView.shadow
         frame.size = NSSize(width: BubbleView.width, height: h)
         widthAnchor.constraint(equalToConstant: BubbleView.width).isActive = true
@@ -473,14 +471,20 @@ final class BubbleView: NSView {
         for c in constraints where c.firstItem === self && c.firstAttribute == .height { c.isActive = false }
         stack.layoutSubtreeIfNeeded()
         let fit = stack.fittingSize
+        stack.frame = NSRect(x: contentOrigin.x, y: contentOrigin.y, width: BubbleView.contentWidth, height: fit.height)
         let h = fit.height + BubbleView.padY * 2 + BubbleView.shadow
-        let oldH = frame.height
         heightAnchor.constraint(equalToConstant: h).isActive = true
-        // 保持底边不动（坐标系 y 向上）
-        frame = NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: h)
-        _ = oldH
         needsDisplay = true
         superview?.needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        // 外部约束把本视图的高度定好后，把内容栈贴回左上角
+        var f = stack.frame
+        f.origin = contentOrigin
+        f.size.width = BubbleView.contentWidth
+        stack.frame = f
     }
 
     override var isFlipped: Bool { true }
