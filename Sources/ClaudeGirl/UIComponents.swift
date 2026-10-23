@@ -612,18 +612,21 @@ final class BubbleView: NSView {
     /// 弹出动画：从尾巴那一角弹开
     func animateIn() {
         guard let layer else { return }
-        let anchorX: CGFloat = tailOnRight ? 1 : 0
-        layer.anchorPoint = CGPoint(x: anchorX, y: 0)
-        layer.position = CGPoint(x: tailOnRight ? frame.maxX : frame.minX, y: frame.minY)
+        // 不改锚点（AppKit 布局时会据此挪动图层），只做缩放 + 淡入
         let a = CASpringAnimation(keyPath: "transform.scale")
-        a.fromValue = 0.3
+        a.fromValue = 0.6
         a.toValue = 1.0
         a.damping = 12
         a.stiffness = 220
         a.mass = 0.9
         a.initialVelocity = 4
         a.duration = a.settlingDuration
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = 0.18
         layer.add(a, forKey: "pop")
+        layer.add(fade, forKey: "fade")
     }
 }
 
