@@ -193,7 +193,7 @@ final class ClaudeBridge {
     private func findStopButton(in window: AXUIElement) -> AXUIElement? {
         var found: AXUIElement?
         walk(window) { el, _ in
-            guard self.role(el) == kAXButtonRole else { return false }
+            guard self.role(el) == "AXButton" else { return false }
             let joined = self.texts(el).joined(separator: " ").lowercased()
             if joined.contains("stop") || joined.contains("停止") {
                 found = el
@@ -211,7 +211,7 @@ final class ClaudeBridge {
         let target = Self.normalize(topic)
         walk(win) { el, _ in
             let r = self.role(el)
-            guard r == kAXStaticTextRole || r == kAXLinkRole || r == kAXButtonRole || r == "AXCell" || r == "AXRow" else { return false }
+            guard r == "AXStaticText" || r == "AXLink" || r == "AXButton" || r == "AXCell" || r == "AXRow" else { return false }
             for t in self.texts(el) where Self.fuzzyMatch(t, topic) {
                 candidates.append((el, abs(Self.normalize(t).count - target.count)))
                 break
@@ -232,7 +232,7 @@ final class ClaudeBridge {
         for _ in 0..<7 {
             guard let e = cur else { break }
             let r = role(e)
-            if [kAXButtonRole, kAXLinkRole, "AXRow", "AXCell", kAXMenuItemRole].contains(r) {
+            if ["AXButton", "AXLink", "AXRow", "AXCell", "AXMenuItem"].contains(r) {
                 if AXUIElementPerformAction(e, kAXPressAction as CFString) == .success { return true }
             }
             tried.append(e)
@@ -251,7 +251,7 @@ final class ClaudeBridge {
         var fields: [AXUIElement] = []
         walk(win) { el, _ in
             let r = self.role(el)
-            if r == kAXTextAreaRole || r == kAXTextFieldRole || r == "AXComboBox" {
+            if r == "AXTextArea" || r == "AXTextField" || r == "AXComboBox" {
                 fields.append(el)
             }
             return false
