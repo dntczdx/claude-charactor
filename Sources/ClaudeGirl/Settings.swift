@@ -28,9 +28,9 @@ final class Settings {
         get { bool("allowWalking", default: false) }
         set { set(newValue, "allowWalking") }
     }
-    /// 用 claude://claude.ai/chat/<uuid> 链接跳转（需先手动验证桌面版支持）
+    /// 用 claude://claude.ai/chat/<uuid> 链接跳转（已验证桌面版支持，默认开）
     var useDeepLink: Bool {
-        get { bool("useDeepLink", default: false) }
+        get { bool("useDeepLink", default: true) }
         set { set(newValue, "useDeepLink") }
     }
     /// 「标题 → 对话 UUID」登记表

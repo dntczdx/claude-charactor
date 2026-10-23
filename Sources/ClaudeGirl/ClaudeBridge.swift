@@ -67,10 +67,18 @@ final class ClaudeBridge {
         activate { [weak self] ok in
             guard let self, ok else { completion(false); return }
             let titles = chat.titles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            // 有 UUID 就直接用 claude:// 链接跳，不需要辅助功能权限
+            var usedDeepLink = false
+            if let id = chat.id, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
+                NSWorkspace.shared.open(url)
+                usedDeepLink = true
+                Log.info("跳转 claude://…/chat/\(id.prefix(8)) 已发出")
+            }
             guard self.isTrusted, chat.id != nil || !titles.isEmpty else { completion(ok); return }
-            self.after(0.6) {
+            // 辅助功能可用：核对是否到了，没到再走侧栏 / 搜索
+            self.after(usedDeepLink ? 1.4 : 0.6) {
                 self.axQueue.async {
-                    let result = self.navigate(to: chat.id, titles: titles)
+                    let result = self.navigate(to: chat.id, titles: titles, deepLinkTried: usedDeepLink)
                     DispatchQueue.main.async { completion(result) }
                 }
             }
@@ -302,7 +310,7 @@ final class ClaudeBridge {
 
     // MARK: 跳转
 
-    private func navigate(to id: String?, titles: [String]) -> Bool {
+    private func navigate(to id: String?, titles: [String], deepLinkTried: Bool = false) -> Bool {
         guard let win0 = mainWindow() else { return false }
         let curID = currentChatID(window: win0)
         let curTitle = currentConversationTitle(window: win0)
@@ -312,8 +320,8 @@ final class ClaudeBridge {
         if let id, curID == id { return true }
         if id == nil, let cur = curTitle, titles.contains(where: { Self.similarity($0, cur) >= 0.8 }) { return true }
 
-        // 2. claude:// 链接（需用户验证过可用才打开）
-        if let id, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
+        // 2. claude:// 链接（open(chat:) 里没发过才发）
+        if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = URL(string: "claude://claude.ai/chat/\(id)") {
             DispatchQueue.main.sync { NSWorkspace.shared.open(url) }
             Thread.sleep(forTimeInterval: 1.4)
             if let w = mainWindow(), currentChatID(window: w) == id {
