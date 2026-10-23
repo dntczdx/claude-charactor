@@ -38,9 +38,11 @@ final class PetController: NSObject {
 
         statusItem = StatusItemController(controller: self)
         startServer()
-        bridge.startObserving { [weak self] generating, title in
-            self?.axUpdate(generating: generating, title: title)
-        }
+        bridge.startObserving(onChange: { [weak self] generating, title, chatID in
+            self?.axUpdate(generating: generating, title: title, chatID: chatID)
+        }, onSidebar: { [weak self] links in
+            self?.registerSidebar(links)
+        })
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
 
         if !bridge.isTrusted {
@@ -113,7 +115,7 @@ final class PetController: NSObject {
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
         linkToForegroundConversation(c)
-        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-")")
+        Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID?.prefix(8) ?? "-")")
         cancelAXFallback()
         bump(c)
         recompute()
@@ -123,12 +125,20 @@ final class PetController: NSObject {
     /// notify 通常是前台正在生成的那条对话发来的（工具调用发生在回复过程中），
     /// 把 Claude 自己起的 topic 和窗口标题（= 侧栏标题）对上，跳转时就能找到它。
     private func linkToForegroundConversation(_ c: Conversation) {
+        // 前台对话正在生成 → notify 几乎一定来自它：直接拿它的 UUID 和标题
+        if bridgeGenerating, c.chatID == nil {
+            if let id = bridge.currentChatID { c.chatID = id }
+            if let t = bridge.currentTitle, c.sidebarTitle == nil { c.sidebarTitle = t }
+        }
+        // 没拿到 UUID：用登记表按标题精确/高相似度查
+        if c.chatID == nil { c.chatID = lookupChatID(for: c) }
         guard let ax = axConversation, ax !== c else { return }
         let axBusy = ax.state == .working || ax.state == .thinking
         let recent = Date().timeIntervalSince(ax.updatedAt) < 30
         guard axBusy || recent else { return }
         if c.sidebarTitle == nil || c.sidebarTitle == ax.topic {
             c.sidebarTitle = ax.sidebarTitle ?? ax.topic
+            if c.chatID == nil { c.chatID = ax.chatID }
             // ax 这条是从窗口标题临时建的壳，合并掉
             if ax.headline.isEmpty, ax.requestId == nil {
                 conversations.removeAll { $0 === ax }
@@ -192,7 +202,7 @@ final class PetController: NSObject {
             // 走辅助功能：切到那条对话，把答案填进输入框发出去
             Log.info("answer 「\(text)」→ 走辅助功能填进对话 titles=\(c.titlesForLookup)")
             c.state = .working
-            bridge.deliver(text, titles: c.titlesForLookup) { [weak self] ok in
+            bridge.deliver(text, chat: c.chatRef) { [weak self] ok in
                 guard let self else { return }
                 Log.info("deliver 结果 ok=\(ok)")
                 if !ok {
@@ -201,7 +211,7 @@ final class PetController: NSObject {
                     c.state = .idle
                     self.windowController.showWhisper("没能自动填进对话，答案已复制到剪贴板")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.recompute() }
-                    self.bridge.open(titles: c.titlesForLookup) { _ in }
+                    self.bridge.open(chat: c.chatRef) { _ in }
                 }
                 self.recompute()
             }
@@ -216,8 +226,9 @@ final class PetController: NSObject {
     func openConversation(_ c: Conversation) {
         c.unread = false
         if currentBubble === c { hideBubble() }
-        Log.info("open titles=\(c.titlesForLookup)")
-        bridge.open(titles: c.titlesForLookup) { [weak self] ok in
+        if c.chatID == nil { c.chatID = lookupChatID(for: c) }
+        Log.info("open id=\(c.chatID?.prefix(8) ?? "-") titles=\(c.titlesForLookup)")
+        bridge.open(chat: c.chatRef) { [weak self] ok in
             Log.info("open 结果 ok=\(ok)")
             if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recompute() }
@@ -264,11 +275,47 @@ final class PetController: NSObject {
 
     // MARK: 辅助功能观察到的生成状态
 
-    private func axUpdate(generating: Bool, title: String?) {
+    private var bridgeGenerating = false
+
+    /// 侧栏扫描结果：登记「标题 → UUID」，并补全已有对话的 UUID
+    private func registerSidebar(_ links: [(id: String, title: String)]) {
+        var reg = Settings.shared.chatRegistry
+        for l in links where !l.title.isEmpty { reg[l.title] = l.id }
+        if reg.count > 400 { reg = Dictionary(uniqueKeysWithValues: reg.suffix(300).map { ($0.key, $0.value) }) }
+        Settings.shared.chatRegistry = reg
+        for c in conversations where c.chatID == nil {
+            c.chatID = lookupChatID(for: c)
+        }
+    }
+
+    /// 从登记表里按标题找 UUID：先精确，再高相似度
+    private func lookupChatID(for c: Conversation) -> String? {
+        let reg = Settings.shared.chatRegistry
+        for t in c.titlesForLookup {
+            if let id = reg[t] { return id }
+        }
+        var best: (String, Double)? = nil
+        for t in c.titlesForLookup {
+            for (title, id) in reg {
+                let s = ClaudeBridge.similarity(t, title)
+                if s >= 0.8, s > (best?.1 ?? 0) { best = (id, s) }
+            }
+        }
+        return best?.0
+    }
+
+    private func axUpdate(generating: Bool, title: String?, chatID: String?) {
+        bridgeGenerating = generating
+        if let title, let chatID {
+            var reg = Settings.shared.chatRegistry
+            if reg[title] != chatID { reg[title] = chatID; Settings.shared.chatRegistry = reg }
+        }
         let topic = title ?? "当前对话"
         if generating {
             cancelAXFallback()
             let c = conversation(forTopic: topic)
+            if let chatID { c.chatID = chatID }
+            if let title, c.sidebarTitle == nil { c.sidebarTitle = title }
             axConversation = c
             // notify 是在回复过程中调用的，之后 Claude 可能还在写：别把刚弹出的完成/提问气泡又打回「思考中」
             let justNotified = c.requestId != nil && c.state.showsBubble && Date().timeIntervalSince(c.updatedAt) < 90

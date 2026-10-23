@@ -96,10 +96,13 @@ final class Conversation {
     var topic: String
     /// Claude 桌面版侧栏里的真实标题（从窗口标题读到的），跳转时优先用它
     var sidebarTitle: String?
+    /// 对话的唯一 ID（claude.ai/chat/<uuid>），有它跳转就不用猜
+    var chatID: String?
     var state: ConvState = .idle
 
     /// 跳转/定位时依次尝试的标题
     var titlesForLookup: [String] { [sidebarTitle, topic].compactMap { $0 } }
+    var chatRef: ChatRef { ChatRef(id: chatID, titles: titlesForLookup) }
     var headline: String = ""
     var points: [String] = []
     var question: String?

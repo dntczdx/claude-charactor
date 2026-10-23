@@ -28,6 +28,16 @@ final class Settings {
         get { bool("allowWalking", default: false) }
         set { set(newValue, "allowWalking") }
     }
+    /// 用 claude://claude.ai/chat/<uuid> 链接跳转（需先手动验证桌面版支持）
+    var useDeepLink: Bool {
+        get { bool("useDeepLink", default: false) }
+        set { set(newValue, "useDeepLink") }
+    }
+    /// 「标题 → 对话 UUID」登记表
+    var chatRegistry: [String: String] {
+        get { d.dictionary(forKey: "chatRegistry") as? [String: String] ?? [:] }
+        set { d.set(newValue, forKey: "chatRegistry") }
+    }
     /// 本地事件端口（MCP 服务器往这里 POST）
     var port: UInt16 {
         let v = d.integer(forKey: "port")
