@@ -96,11 +96,13 @@ final class PetWindowController: NSObject {
         clampToScreen()
     }
 
+    /// 只保证别完全丢到屏幕外：人物框至少留 80pt 在屏幕里，其余随便放
     private func clampToScreen() {
-        let vis = screen.visibleFrame
+        let full = screen.frame
+        let keep: CGFloat = 80
         var p = spriteScreenOrigin
-        p.x = min(max(p.x, vis.minX - 40), vis.maxX - PetWindowController.spriteSize.width + 40)
-        p.y = min(max(p.y, vis.minY - 10), vis.maxY - PetWindowController.spriteSize.height)
+        p.x = min(max(p.x, full.minX - PetWindowController.spriteSize.width + keep), full.maxX - keep)
+        p.y = min(max(p.y, full.minY - PetWindowController.spriteSize.height + keep), full.maxY - keep)
         setSpriteScreenOrigin(p)
     }
 
