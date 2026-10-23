@@ -55,7 +55,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let s = Settings.shared
         menu.addItem(toggle("显示大小姐", on: s.showPet, action: #selector(toggleShow)))
         menu.addItem(toggle("安静模式（只记录不弹泡）", on: s.quietMode, action: #selector(toggleQuiet)))
-        menu.addItem(toggle("允许到处走", on: s.allowWalking, action: #selector(toggleWalk)))
+        menu.addItem(toggle("允许到处走（蹦着挪）", on: s.allowWalking, action: #selector(toggleWalk)))
         menu.addItem(.separator())
 
         let test = NSMenuItem(title: "测试一下气泡", action: #selector(testBubble), keyEquivalent: "")

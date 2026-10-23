@@ -23,9 +23,9 @@ final class Settings {
         get { bool("quietMode", default: false) }
         set { set(newValue, "quietMode") }
     }
-    /// 允许空闲时到处走
+    /// 允许空闲时到处走（原项目没有走路动画，开了会一蹦一蹦地挪；默认关）
     var allowWalking: Bool {
-        get { bool("allowWalking", default: true) }
+        get { bool("allowWalking", default: false) }
         set { set(newValue, "allowWalking") }
     }
     /// 本地事件端口（MCP 服务器往这里 POST）

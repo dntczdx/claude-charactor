@@ -22,6 +22,14 @@ final class PetWindowController: NSObject {
     private var walkTimer: Timer?
     private var walkTarget: CGFloat = 0
     private var walking = false
+    // 蹦跳式移动：每一跳 0.5s、前进 26pt、起落 14pt，跳之间停 0.18s
+    private var hopStartTime: TimeInterval = 0
+    private var hopFromX: CGFloat = 0
+    private var hopBaseY: CGFloat = 0
+    private static let hopDuration: TimeInterval = 0.5
+    private static let hopGap: TimeInterval = 0.18
+    private static let hopDistance: CGFloat = 26
+    private static let hopHeight: CGFloat = 14
     private var dragging = false
     private var dragStart: NSPoint = .zero
     private var dragOrigin: NSPoint = .zero
@@ -215,25 +223,42 @@ final class PetWindowController: NSObject {
         walking = true
         player.flipped = target < cur
         playClip(for: .walk)
+        hopStartTime = CACurrentMediaTime()
+        hopFromX = cur
+        hopBaseY = spriteScreenOrigin.y
         walkTimer?.invalidate()
-        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.walkStep() }
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.walkStep() }
         RunLoop.main.add(t, forMode: .common)
         walkTimer = t
     }
 
+    /// 一跳一跳地挪：跳的时候 x 匀速前进、y 走一段正弦弧；落地停一下再跳
     private func walkStep() {
         guard walking, walkingAllowed else { stopWalk(resumeIdle: true); return }
-        let speed: CGFloat = 46.0 / 30.0  // 46pt/s
-        var p = spriteScreenOrigin
-        let dx = walkTarget - p.x
-        if abs(dx) <= speed {
-            p.x = walkTarget
-            setSpriteScreenOrigin(p)
-            stopWalk(resumeIdle: true)
+        let now = CACurrentMediaTime()
+        let elapsed = now - hopStartTime
+        let dir: CGFloat = walkTarget >= hopFromX ? 1 : -1
+        let remaining = abs(walkTarget - hopFromX)
+        let dist = min(PetWindowController.hopDistance, remaining)
+
+        if elapsed >= PetWindowController.hopDuration {
+            // 落地
+            let landedX = hopFromX + dir * dist
+            setSpriteScreenOrigin(NSPoint(x: landedX, y: hopBaseY))
+            if abs(walkTarget - landedX) < 1 {
+                stopWalk(resumeIdle: true)
+                return
+            }
+            if elapsed >= PetWindowController.hopDuration + PetWindowController.hopGap {
+                hopFromX = landedX
+                hopStartTime = now
+            }
             return
         }
-        p.x += dx > 0 ? speed : -speed
-        setSpriteScreenOrigin(p)
+        let t = CGFloat(elapsed / PetWindowController.hopDuration)
+        let x = hopFromX + dir * dist * t
+        let y = hopBaseY + PetWindowController.hopHeight * sin(t * .pi)
+        setSpriteScreenOrigin(NSPoint(x: x, y: y))
     }
 
     private func stopWalk(resumeIdle: Bool) {
@@ -242,6 +267,7 @@ final class PetWindowController: NSObject {
         let wasWalking = walking
         walking = false
         player.flipped = false
+        if wasWalking { setSpriteScreenOrigin(NSPoint(x: spriteScreenOrigin.x, y: hopBaseY)) }
         Settings.shared.homeOrigin = spriteScreenOrigin
         if resumeIdle {
             if wasWalking { playClip(for: .idle) }
