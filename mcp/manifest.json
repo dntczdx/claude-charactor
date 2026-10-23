@@ -1,0 +1,36 @@
+{
+  "manifest_version": "0.3",
+  "name": "claude-girl-notify",
+  "display_name": "克劳德大小姐 · 桌宠通知",
+  "version": "0.1.0",
+  "description": "回复结束时通知桌面上的克劳德大小姐，并在气泡里收集你的回答。",
+  "long_description": "配合 ClaudeGirl.app（macOS 桌宠）使用：Claude 每轮回复结束调用 notify 工具，大小姐弹出漫画气泡显示结论与要点；需要你决定时气泡里直接给选项或输入框，回答会原路交还给 Claude。",
+  "author": {
+    "name": "dntczdx"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "CLAUDEGIRL_URL": "http://127.0.0.1:47333"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "notify",
+      "description": "通知桌面上的克劳德大小姐这一轮的结论；带 question/options 时等待用户在气泡里的回答。"
+    }
+  ],
+  "keywords": ["desktop-pet", "notification", "claude-girl"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

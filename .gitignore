@@ -1,0 +1,8 @@
+.build/
+build/
+Assets/raw/
+Assets/clips/
+mcp/node_modules/
+mcp/*.mcpb
+.DS_Store
+*.swp

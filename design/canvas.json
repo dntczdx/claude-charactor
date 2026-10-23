@@ -1,0 +1,22 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-22T23:50:00Z"},
+  "title": "克劳德大小姐 桌宠通知器 界面设计",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 1440, "h": 900, "title": "macOS 桌面上的样子（点大小姐切换状态）", "is_interactive": true},
+    "Girl.dc.html": {"x": 1520, "y": 0, "w": 260, "h": 180, "title": "角色组件 Girl（Tweaks 切姿态）"},
+    "States.dc.html": {"x": 0, "y": 1020, "w": 1440, "h": 860, "title": "大小姐的七种状态"},
+    "Bubbles.dc.html": {"x": 0, "y": 2000, "w": 1440, "h": 1180, "title": "气泡：内容、回答与跳转"}
+  },
+  "order": ["Main.dc.html", "Girl.dc.html", "States.dc.html", "Bubbles.dc.html"],
+  "notes": {
+    "t1": {"x": 0, "y": -300, "text": "克劳德大小姐 · 连接 Claude 桌面版的 macOS 桌宠通知器 — 界面设计 v3", "kind": "title1", "maxW": 1440},
+    "n1": {"x": 1860, "y": 0, "w": 380, "fill": "orange", "text": "行为规则（草案）\n\n• 原生 macOS 应用：无边框透明置顶窗口，鼠标穿透空白处，点中大小姐才响应。\n• 空闲时喝茶、翻书，沿屏幕底边（Dock 上方）左右挪动；会爬到最前窗口标题栏上坐着。\n• Claude 桌面版有对话在生成 → 敲小键盘；消息发出还没开始回 → 托腮思考。\n• 某个对话回复完成 → 星星眼跳两下，气泡从头顶弹出（弹性 0.35s），停留 20s 或点掉；多条叠层显示 +N，提问优先于完成。\n• Claude 抛问题 → 双手合十等你，气泡里直接点选项或打字回答。\n• 断线、超限 → 冒汗道歉。\n• 进行中不打扰：只在头顶挂灰色小字轻提示。\n• 可拖动到任意位置，放手后从那里继续。\n• 点大小姐 → 展开对话面板；「打开对话」→ 激活 Claude 桌面版并切到那条对话。"},
+    "n2": {"x": 1520, "y": 280, "w": 380, "fill": "gray", "text": "视觉语言\n\n• 形象：网友共创的「克劳德大小姐」。动作直接用原项目 25 段带透明通道的动画片段（VP9 alpha），本稿转成动态 WebP 预览；正式 app 里直接播 webm/视频帧。\n• 来源与许可：GitHub wangxianda941030/Claude-girl，美术 CC BY-NC 4.0 —— 须署名「克劳德大小姐 · Claude-girl」并附仓库链接，不可商用。\n• 屏幕尺寸：约 260×180pt（人物高约 170pt），Retina 2x。\n• 气泡：白底 3px 墨色描边 + 6px 硬阴影，像漫画格。\n• 字体：Nunito + 系统苹方，标题 900 字重。\n• 状态色：完成 #1F8A4C · 等你回答 #B26200 · 出错 #C0392B · 工作 #D97757 · 空闲 #8A867E。"},
+    "n3": {"x": 1520, "y": 1020, "w": 380, "fill": "blue", "text": "技术路线（连接 Claude 桌面版）\n\n• 前提：Claude 桌面版是单窗口（⌘N 只是同窗口新建对话），多个对话可同时在后台生成。界面上看不到后台对话的进度，所以不能只靠读屏。\n\n• 壳：Swift + AppKit。NSWindow(.borderless) 透明、level = .floating、全空间可见；NSStatusItem 菜单栏入口；状态机 idle / walk / working / thinking / done / ask / error；动画用 AVPlayer 播原项目的 alpha webm 或预拆帧。\n\n• 事件来源：\n  主：本地 MCP 服务器（打包成 .mcpb 桌面扩展，一键装进 Claude 桌面版）。任何对话、无论前后台，回复结束都能触发。\n  辅：辅助功能 API 观察 Claude 窗口里「停止生成」按钮出现/消失 → 当前对话的思考中/工作中姿态；读侧栏标题用于定位对话。\n  兜底：没调工具时，用 AX 读当前对话最后一条回复做摘要。\n\n• 多对话：以 topic / 侧栏标题为 key 维护状态表；大小姐姿态取所有对话里优先级最高的：出错 > 等你回答 > 完成 > 工作中 > 思考中 > 空闲。"},
+    "n4": {"x": 1520, "y": 2000, "w": 380, "fill": "blue", "text": "气泡内容 & 在气泡里回答（供实现）\n\n• 内容从哪来：MCP 工具 notify(topic, headline, points[≤3], question?, options[2–4]?, needs_input?)。在 Claude 的个人偏好里写：「每次回复结束调用 notify：headline 一句结论，points 最多三条；若需要我决定，用 question + options」。Claude 自己写摘要，比截取正文可靠。\n\n• 在气泡里回答：点选项 / 输入文字 → 两条路：\n  ① 工具调用还挂着（Claude 桌面版约 60s 会掐断 MCP 调用）：答案作为工具结果直接返回，Claude 在同一对话里继续，无需碰界面。\n  ② 超过 ~50s 工具先返回「用户稍后回答」，Claude 结束本轮。之后用户点选项时，大小姐用辅助功能 API：激活 Claude → 点侧栏里标题匹配的对话 → 把答案写进输入框 → 回车发送。完成气泡上的「回一句…」也走这条路。\n\n• 「打开对话」：claude:// 协议目前只能开新对话（claude://claude.ai/new），没有定位到已有对话的链接，所以同样用 AX 点侧栏；匹配不到就只激活 Claude 窗口。\n\n• 提问气泡不自动消失；回答后缩成一行「已回复」3s 淡出；完成气泡 20s 淡出，面板里仍可回看。"}
+  },
+  "designSystems": []
+}

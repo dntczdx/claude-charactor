@@ -1,0 +1,190 @@
+import AppKit
+import ImageIO
+import QuartzCore
+
+/// 一段动画：一组 CGImage 帧
+struct Clip {
+    let name: String
+    let frames: [CGImage]
+    let fps: Double
+}
+
+/// 片段代号（与原项目 Claude-girl 一致）
+enum ClipName {
+    static let standby = "A01"       // 待机
+    static let thinking = "A02"      // 托腮思考
+    static let typing = "A03"        // 敲小键盘
+    static let sorry = "A05"         // 冒汗道歉
+    static let palms = "A06"         // 双手合十等你
+    static let teaRest = "A07"       // 捧茶歇一会儿
+    static let wave = "B04"          // 开心挥手
+    static let tea = "C01"           // 喝茶
+    static let book = "C02"          // 翻书
+    static let correct = "D01"       // 你说得完全正确
+    static let longThink = "D03"     // 超长思考
+
+    /// 每个姿态可用的片段（按优先顺序；第一个存在的被使用，idle 随机）
+    static func candidates(for pose: Pose) -> [String] {
+        switch pose {
+        case .idle: return [tea, teaRest, book, standby]
+        case .walk: return [standby, tea]
+        case .working: return [typing, standby]
+        case .thinking: return [thinking, longThink, standby]
+        case .done: return [correct, wave, standby]
+        case .ask: return [palms, wave, standby]
+        case .error: return [sorry, standby]
+        }
+    }
+}
+
+/// 按需从磁盘加载帧，最多缓存 3 段
+final class ClipLibrary {
+    static let shared = ClipLibrary()
+
+    let fps: Double = 12
+    private(set) var available: Set<String> = []
+    private var cache: [String: Clip] = [:]
+    private var lru: [String] = []
+    private let queue = DispatchQueue(label: "claudegirl.clips", qos: .userInitiated)
+
+    init() {
+        rescan()
+    }
+
+    func rescan() {
+        available = []
+        guard let dir = AssetLocator.clipsDirectory,
+              let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for u in items {
+            if (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                available.insert(u.lastPathComponent)
+            }
+        }
+    }
+
+    /// 为姿态挑一个存在的片段；idle 在可用的几段里随机
+    func clipName(for pose: Pose) -> String? {
+        let list = ClipName.candidates(for: pose).filter { available.contains($0) }
+        guard !list.isEmpty else { return nil }
+        if pose == .idle { return list.randomElement() }
+        return list.first
+    }
+
+    /// 主线程调用；帧在后台解码，解码完回到主线程
+    func load(_ name: String, completion: @escaping (Clip?) -> Void) {
+        if let c = cache[name] {
+            touch(name)
+            completion(c)
+            return
+        }
+        queue.async { [weak self] in
+            guard let self else { return }
+            let clip = self.decode(name)
+            DispatchQueue.main.async {
+                if let clip { self.store(clip) }
+                completion(clip)
+            }
+        }
+    }
+
+    private func decode(_ name: String) -> Clip? {
+        guard let dir = AssetLocator.clipsDirectory?.appendingPathComponent(name) else { return nil }
+        let exts: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "tif", "tiff"]
+        let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { exts.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        var frames: [CGImage] = []
+        frames.reserveCapacity(files.count)
+        let opts = [kCGImageSourceShouldCache: true] as CFDictionary
+        for f in files {
+            guard let src = CGImageSourceCreateWithURL(f as CFURL, nil),
+                  let img = CGImageSourceCreateImageAtIndex(src, 0, opts) else { continue }
+            frames.append(img)
+        }
+        return frames.isEmpty ? nil : Clip(name: name, frames: frames, fps: fps)
+    }
+
+    private func store(_ clip: Clip) {
+        cache[clip.name] = clip
+        touch(clip.name)
+        while lru.count > 3, let old = lru.first {
+            lru.removeFirst()
+            cache[old] = nil
+        }
+    }
+
+    private func touch(_ name: String) {
+        lru.removeAll { $0 == name }
+        lru.append(name)
+    }
+}
+
+/// 把帧逐张塞进 CALayer 播放
+final class SpritePlayer {
+    let layer = CALayer()
+    private(set) var clip: Clip?
+    private var index = 0
+    private var timer: Timer?
+    private var loop = true
+    var onFinished: (() -> Void)?
+
+    /// 朝左走时水平翻转
+    var flipped = false {
+        didSet {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.transform = flipped ? CATransform3DMakeScale(-1, 1, 1) : CATransform3DIdentity
+            CATransaction.commit()
+        }
+    }
+
+    init() {
+        layer.contentsGravity = .resizeAspect
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.magnificationFilter = .linear
+        layer.minificationFilter = .trilinear
+        layer.isOpaque = false
+        layer.actions = ["contents": NSNull(), "transform": NSNull(), "position": NSNull(), "bounds": NSNull()]
+    }
+
+    var isPlaying: Bool { timer != nil }
+
+    func play(_ clip: Clip, loop: Bool) {
+        self.clip = clip
+        self.loop = loop
+        index = 0
+        setContents(clip.frames[0])
+        timer?.invalidate()
+        let t = Timer(timeInterval: 1.0 / clip.fps, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func tick() {
+        guard let clip else { return }
+        index += 1
+        if index >= clip.frames.count {
+            if loop {
+                index = 0
+            } else {
+                index = clip.frames.count - 1
+                stop()
+                onFinished?()
+                return
+            }
+        }
+        setContents(clip.frames[index])
+    }
+
+    private func setContents(_ img: CGImage) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contents = img
+        CATransaction.commit()
+    }
+}

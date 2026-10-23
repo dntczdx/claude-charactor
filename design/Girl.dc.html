@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>克劳德大小姐 角色组件</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.girl{position:relative;width:260px;height:180px;overflow:visible}
+.girl img{position:absolute;left:0;top:0;width:260px;height:180px;display:none;pointer-events:none;user-select:none}
+.g-idle .p-idle,.g-walk .p-walk,.g-working .p-working,.g-thinking .p-thinking,.g-done .p-done,.g-ask .p-ask,.g-error .p-error{display:block}
+.g-walk .p-walk{animation:bob .42s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+.g-done .p-done{transform-origin:50% 100%;animation:hop 1.6s cubic-bezier(.3,0,.2,1) 2}
+@keyframes hop{0%,50%,100%{transform:translateY(0)}8%{transform:translateY(2px) scaleY(.98)}26%{transform:translateY(-14px)}44%{transform:translateY(0)}}
+</style>
+</helmet>
+
+<div class="girl {{cls}}" role="img" aria-label="克劳德大小姐：{{label}}">
+  <img class="p-idle" src="/_blob/31a76d79f87f76767ea149fb2ff5b0fe" alt="">
+  <img class="p-walk" src="/_blob/de38fd64216e897d4c7e7ae592e0106a" alt="">
+  <img class="p-working" src="/_blob/05119921488a48ccc96ab8b1de607200" alt="">
+  <img class="p-thinking" src="/_blob/c0fb10d83319689ad4aa28604564e49e" alt="">
+  <img class="p-done" src="/_blob/44f9f30dac2fce2fbe48d26feb5c4147" alt="">
+  <img class="p-ask" src="/_blob/37a1756e80478a3d463a097046c29472" alt="">
+  <img class="p-error" src="/_blob/53db8d73c96226957ab7a7438870e5e2" alt="">
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"pose":{"editor":"enum","options":["idle","walk","working","thinking","done","ask","error"],"default":"done"},"$preview":{"width":260,"height":180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const labels = { idle: '喝茶', walk: '溜达', working: '敲键盘', thinking: '托腮思考', done: '你说得完全正确', ask: '双手合十等你', error: '冒汗道歉' };
+    const p = this.props.pose || 'done';
+    return { cls: 'g-' + p, label: labels[p] || p };
+  }
+}
+</script>
+</body>
+</html>

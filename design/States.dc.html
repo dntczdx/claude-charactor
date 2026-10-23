@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>大小姐的七种状态</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&family=Noto+Sans+SC:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:"Nunito",-apple-system,"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",sans-serif;color:#141413}
+a{color:#141413}a:hover{color:#D97757}
+.cell{display:flex;flex-direction:column;align-items:center;gap:10px;padding:22px 16px 20px;background:#fff;border:2px solid #141413;border-radius:20px;box-sizing:border-box}
+.ground{width:200px;height:4px;border-radius:2px;background:#E4E1DA;margin-top:-6px}
+.sname{font-size:20px;font-weight:900;margin:0}
+.strig{font-size:13px;line-height:1.5;color:#55514A;margin:0;text-align:center}
+.tag{font-size:11px;font-weight:800;letter-spacing:.04em;padding:3px 8px;border-radius:6px;background:#F2F0EB;color:#55514A}
+.walkbox{animation:pace 5s ease-in-out infinite}
+@keyframes pace{0%,100%{transform:translateX(-30px)}50%{transform:translateX(30px)}}
+.map{width:100%;font-size:12.5px;line-height:1.6;color:#2B2A28;margin:0;padding:0;list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:2px 14px}
+.map li b{font-weight:800;color:#141413}
+</style>
+</helmet>
+
+<div style="width: 1440px; height: 860px; box-sizing: border-box; padding: 36px 40px; background: #FAF9F5; display: flex; flex-direction: column; gap: 18px">
+  <div style="display: flex; align-items: baseline; gap: 16px">
+    <h1 style="margin: 0; font-size: 26px; font-weight: 900">状态表</h1>
+    <p style="margin: 0; font-size: 14px; color: #55514A">动作直接用 Claude-girl 原项目的动画片段（带透明通道），由 Claude 桌面版的对话状态驱动切换。</p>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 16px; flex: 1; min-height: 0">
+
+    <div class="cell">
+      <span class="tag">IDLE · C01 喝茶</span>
+      <dc-import name="Girl" pose="idle" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">喝茶</h2>
+      <p class="strig">没有对话在生成。<br>端着茶杯小口喝，偶尔翻书、打哈欠。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">WALK · A01 待机 + 位移</span>
+      <div class="walkbox"><dc-import name="Girl" pose="walk" hint-size="260px,180px"></dc-import></div>
+      <div class="ground"></div>
+      <h2 class="sname">溜达</h2>
+      <p class="strig">空闲时沿屏幕底边来回挪，<br>会爬到最前窗口的标题栏上坐。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">WORKING · A03 敲小键盘</span>
+      <dc-import name="Girl" pose="working" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">工作中</h2>
+      <p class="strig">Claude 正在输出回复或跑工具。<br>掏出笔记本噼里啪啦。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">THINKING · A02 托腮思考</span>
+      <dc-import name="Girl" pose="thinking" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">思考中</h2>
+      <p class="strig">消息发出、回复还没开始。<br>托腮望天。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">DONE · D01 你说得完全正确</span>
+      <dc-import name="Girl" pose="done" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">完成</h2>
+      <p class="strig">某个对话的回复生成完毕。<br>星星眼跳两下，气泡随即弹出。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">ASK · A06 双手合十等你</span>
+      <dc-import name="Girl" pose="ask" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">等你回答</h2>
+      <p class="strig">Claude 抛出了问题或选项。<br>合掌等你点头。</p>
+    </div>
+
+    <div class="cell">
+      <span class="tag">ERROR · A05 冒汗道歉</span>
+      <dc-import name="Girl" pose="error" hint-size="260px,180px"></dc-import>
+      <div class="ground"></div>
+      <h2 class="sname">出错</h2>
+      <p class="strig">断线、超限、回复失败。<br>冒汗鞠躬道歉。</p>
+    </div>
+
+    <div class="cell" style="align-items: flex-start; gap: 8px">
+      <span class="tag">素材映射 · 原项目 25 段里选用</span>
+      <h2 class="sname" style="font-size: 16px">其余可按场景补充</h2>
+      <ul class="map">
+        <li><b>A07</b> 捧茶歇一会儿 → 空闲变奏</li>
+        <li><b>C02</b> 翻书 → 空闲变奏</li>
+        <li><b>B02</b> 揉眼睛打哈欠 → 深夜空闲</li>
+        <li><b>B05</b> 伸懒腰 → 长任务结束</li>
+        <li><b>D03</b> 超长思考 → 思考超过 30s</li>
+        <li><b>B04</b> 开心挥手 → 你回答之后</li>
+        <li><b>C05</b> 被戳炸毛 → 拖拽</li>
+        <li><b>C06</b> 被戳害羞 → 单击</li>
+        <li><b>D06</b> 限额了 → 用量用尽</li>
+        <li><b>C03</b> 礼貌婉拒 → 安静模式开启</li>
+      </ul>
+      <p class="strig" style="text-align: left; font-size: 12px; margin-top: auto">素材来自 GitHub wangxianda941030/Claude-girl，CC BY-NC 4.0，需署名、非商用。</p>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

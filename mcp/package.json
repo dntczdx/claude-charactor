@@ -1,0 +1,21 @@
+{
+  "name": "claude-girl-notify",
+  "version": "0.1.0",
+  "description": "Claude 桌面版 → 桌面上的克劳德大小姐：回复结束时通知，并在气泡里收集回答",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claude-girl-notify": "server/index.js"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "pack": "npx @anthropic-ai/mcpb pack"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}
