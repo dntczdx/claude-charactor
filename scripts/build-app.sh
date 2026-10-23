@@ -56,7 +56,7 @@ if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | 
 fi
 if [ -n "$IDENTITY" ]; then
   codesign --force --deep --options runtime --sign "$IDENTITY" "$APP" 2>/dev/null || codesign --force --deep --sign "$IDENTITY" "$APP"
-  echo "已用「$IDENTITY」签名"
+  echo "已用「${IDENTITY}」签名"
   SIGNED_STABLE=1
 else
   codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true

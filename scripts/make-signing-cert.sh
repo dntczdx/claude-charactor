@@ -8,7 +8,7 @@ NAME="ClaudeGirl Dev"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$NAME"; then
-  echo "钥匙串里已经有「$NAME」，不用再生成。"
+  echo "钥匙串里已经有「${NAME}」，不用再生成。"
   exit 0
 fi
 
@@ -48,6 +48,6 @@ if security find-identity -v -p codesigning | grep -q "$NAME"; then
   echo "现在重新跑 scripts/build-app.sh，第一次 codesign 若弹窗问是否允许访问钥匙串，选「始终允许」。"
   echo "装好后在 Accessibility 里把旧条目删掉、重新加一次 /Applications/ClaudeGirl.app，以后就不用再动了。"
 else
-  echo "证书导入了，但 codesign 还没识别为可用身份。打开「钥匙串访问」，找到「$NAME」→ 显示简介 → 信任 → 代码签名 改为「始终信任」，再重试。" >&2
+  echo "证书导入了，但 codesign 还没识别为可用身份。打开「钥匙串访问」，找到「${NAME}」→ 显示简介 → 信任 → 代码签名 改为「始终信任」，再重试。" >&2
   exit 1
 fi
