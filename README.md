@@ -38,9 +38,8 @@ cd claude-charactor
 # 1. 下载原项目的动画片段并拆成带透明通道的帧（约 12 段，几十 MB）
 scripts/prepare-assets.sh
 
-# 2. 编译并打包成 build/ClaudeGirl.app
+# 2. 编译、打包、装到 /Applications 并启动（不想自动安装：INSTALL=0 scripts/build-app.sh）
 scripts/build-app.sh
-open build/ClaudeGirl.app        # 想常驻就 cp -R build/ClaudeGirl.app /Applications/
 
 # 3. 把 MCP 服务器装进 Claude 桌面版（写 claude_desktop_config.json）
 scripts/install-mcp.sh

@@ -52,5 +52,17 @@ PLIST
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 
 echo "打包完成：$APP"
-echo "运行：open $APP"
-echo "（可选）装到应用程序：cp -R $APP /Applications/"
+
+# 默认装到 /Applications 并重启；不想装就 INSTALL=0 scripts/build-app.sh
+if [ "${INSTALL:-1}" = "1" ]; then
+  pkill -x ClaudeGirl 2>/dev/null || true
+  sleep 0.5
+  rm -rf /Applications/ClaudeGirl.app
+  cp -R "$APP" /Applications/ClaudeGirl.app
+  touch /Applications/ClaudeGirl.app
+  open /Applications/ClaudeGirl.app
+  echo "已安装并启动：/Applications/ClaudeGirl.app"
+  echo "提醒：重新编译后要在 System Settings → Privacy & Security → Accessibility 里把开关重新打开一次"
+else
+  echo "运行：open $APP"
+fi
