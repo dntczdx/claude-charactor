@@ -17,7 +17,14 @@ final class PetController: NSObject {
     /// 用户先答了、MCP 还没来取的答案
     private var pendingAnswers: [String: String] = [:]
     private var currentBubble: Conversation?
-    private var bubbleTimer: Timer?
+    /// 每条「完成」气泡自己的收起计时
+    private var hideTimers: [ObjectIdentifier: Timer] = [:]
+    /// 面板里点选、要展开显示的那条（即使已读）
+    private var pinnedBubble: Conversation?
+    /// 刚回答完、还要留 3 秒显示「✓ 已回复」的
+    private var lingering: [ObjectIdentifier: Conversation] = [:]
+    private var shownSignature = ""
+    private var forceRebuild = false
     private var axThinkTimer: Timer?
     private var axFallbackTimer: Timer?
     private var axConversation: Conversation?
@@ -32,7 +39,7 @@ final class PetController: NSObject {
         panel.conversations = { [weak self] in self?.conversations ?? [] }
         panel.onOpen = { [weak self] c in
             self?.windowController.closePanel()
-            self?.openConversation(c)
+            self?.focusBubble(c)
         }
         panel.onMarkAllRead = { [weak self] in self?.markAllRead() }
 
@@ -90,7 +97,7 @@ final class PetController: NSObject {
             let sessions = SessionRegistry.snapshot().map { ["id": $0.chatID, "name": $0.name, "busy": $0.busy, "pid": Int($0.pid)] as [String: Any] }
             let convs = conversations.map { ["topic": $0.topic, "sidebar": $0.sidebarTitle ?? "", "chat": $0.chatID ?? "", "state": $0.state.label] }
             return HTTPResponse(json: ["accessibility": bridge.isTrusted, "foregroundTitle": bridge.currentTitle ?? "", "foregroundChat": bridge.currentChatID ?? "",
-                                       "bubble": windowController.bubbleTopic ?? "", "bubbleBusy": windowController.bubbleBusy,
+                                       "bubble": windowController.bubbleTopic ?? "", "bubbleBusy": windowController.bubbleBusy, "bubbles": windowController.visibleBubbleCount, "bubbleFrames": windowController.bubbleFrames,
                                        "sessions": sessions, "conversations": convs, "registry": Settings.shared.chatRegistry])
 
         case ("POST", "/open"):
@@ -132,7 +139,9 @@ final class PetController: NSObject {
         c.apply(e, requestId: id)
         // 没有聊天对话在生成（前台没在生成、侧栏也没有 Running 行）时，才允许把 notify 归给唯一在生成的 Code 会话
         let chatBusy = (bridgeGenerating && (bridge.currentChatID.map { !$0.hasPrefix("epitaxy/") } ?? true)) || !sidebarBusyTitles.isEmpty
-        if let s = SessionRegistry.caller(topic: c.topic, headline: c.headline, confirmedOnly: chatBusy) {
+        if e.test == true {
+            // 诊断通知：不绑定任何真实对话
+        } else if let s = SessionRegistry.caller(topic: c.topic, headline: c.headline, confirmedOnly: chatBusy) {
             // 正在生成的 Code 会话就是发 notify 的那条：直接绑定 ID 和侧栏标题
             if let other = conversations.first(where: { $0 !== c && $0.chatID == s.chatID }) {
                 // 同一会话之前用别的 topic 记过：合并到旧的那条上
@@ -160,7 +169,9 @@ final class PetController: NSObject {
             c.sidebarTitle = t
             Log.info("notify 绑定到侧栏正在生成的对话「\(t)」")
         }
-        linkToForegroundConversation(c)
+        if e.test != true { linkToForegroundConversation(c) }
+        // 新来的提问比面板里点选的「完成」气泡更要紧：让它到最下面展开
+        if c.state == .ask, let p = pinnedBubble, p !== c, p.state != .ask { pinnedBubble = nil }
         // 同一对话 ID 只留这一条（把辅助功能建的壳合并掉）
         if let id = c.chatID {
             for other in conversations where other !== c && other.chatID == id {
@@ -241,8 +252,17 @@ final class PetController: NSObject {
     func answer(_ c: Conversation, text: String) {
         c.answer = text
         c.unread = false
-        windowController.markBubbleAnswered(text)
-        scheduleBubbleHide(after: 3)
+        if pinnedBubble === c { pinnedBubble = nil }
+        hideTimers.removeValue(forKey: ObjectIdentifier(c))?.invalidate()
+        windowController.markBubbleAnswered(c, text: text)
+        // 留 3 秒给「✓ 已回复」，然后从气泡堆里撤掉
+        lingering[ObjectIdentifier(c)] = c
+        let t = Timer(timeInterval: 3, repeats: false) { [weak self, weak c] _ in
+            guard let self, let c else { return }
+            self.lingering.removeValue(forKey: ObjectIdentifier(c))
+            self.recompute(force: true)
+        }
+        RunLoop.main.add(t, forMode: .common)
 
         let recent = Date().timeIntervalSince(c.updatedAt) < 45
         if let rid = c.requestId, let w = waiters.removeValue(forKey: rid) {
@@ -282,8 +302,7 @@ final class PetController: NSObject {
     }
 
     func openConversation(_ c: Conversation) {
-        c.unread = false
-        if currentBubble === c { hideBubble() }
+        // 跳过去看，气泡留着（等「知道了」或自动收起），回来还能继续在气泡里回一句
         if c.chatID == nil { c.chatID = lookupChatID(for: c) }
         Log.info("open id=\(c.chatID.map(Self.shortID) ?? "-") titles=\(c.titlesForLookup)")
         bridge.open(chat: c.chatRef) { [weak self] ok in
@@ -296,14 +315,25 @@ final class PetController: NSObject {
 
     func dismissBubble(_ c: Conversation) {
         c.unread = false
-        if currentBubble === c { hideBubble() }
-        recompute()
+        if pinnedBubble === c { pinnedBubble = nil }
+        lingering.removeValue(forKey: ObjectIdentifier(c))
+        hideTimers.removeValue(forKey: ObjectIdentifier(c))?.invalidate()
+        recompute(force: true)
+    }
+
+    /// 面板里点了一条：把它的气泡（重新）展开显示，不跳转
+    func focusBubble(_ c: Conversation) {
+        pinnedBubble = c
+        recompute(force: true)
     }
 
     func markAllRead() {
         for c in conversations { c.unread = false }
-        hideBubble()
-        recompute()
+        pinnedBubble = nil
+        lingering.removeAll()
+        for (_, t) in hideTimers { t.invalidate() }
+        hideTimers.removeAll()
+        recompute(force: true)
     }
 
     func togglePanel() {
@@ -625,74 +655,80 @@ final class PetController: NSObject {
         return (active.map(\.state).max() ?? .idle).pose
     }
 
-    /// 重新决定姿态、气泡、轻提示
-    func recompute() {
+    /// 重新决定姿态、气泡堆、轻提示
+    func recompute(force: Bool = false) {
         windowController.setPose(topPose())
 
         let quiet = Settings.shared.quietMode
-        let next = conversations
+        var list = conversations
             .filter { $0.unread && $0.state.showsBubble && !quiet }
             .sorted { a, b in
                 if a.state != b.state { return a.state > b.state }
                 return a.updatedAt > b.updatedAt
             }
-            .first
-        if next !== currentBubble {
-            // 用户正在当前气泡里输入或悬停：别换，新来的留在队列里，等这条收起再露出来
-            if currentBubble != nil, windowController.bubbleBusy {
-                Log.info("气泡忙（输入/悬停中），暂不切换到「\(next?.topic ?? "-")」")
+        // 面板里点选的那条放最下面展开
+        if let p = pinnedBubble {
+            list.removeAll { $0 === p }
+            list.insert(p, at: 0)
+        }
+        // 刚回答完的留 3 秒
+        for (_, c) in lingering where !list.contains(where: { $0 === c }) { list.insert(c, at: 0) }
+        let overflow = max(0, list.count - 3)
+        let show = Array(list.prefix(3))
+        let sig = show.map { c -> String in
+            let answered = lingering[ObjectIdentifier(c)] != nil ? "a" : ""
+            return "\(ObjectIdentifier(c).hashValue):\(c.state.rawValue):\(c.points.count):\(c.headline.hashValue)\(answered)"
+        }.joined(separator: "|")
+
+        if sig != shownSignature || force {
+            if !force, currentBubble != nil, windowController.bubbleBusy {
+                Log.info("气泡忙（输入/悬停中），暂不更新气泡堆")
             } else {
-                showBubble(next)
+                shownSignature = sig
+                currentBubble = show.first
+                windowController.setBubbles(show.enumerated().map { i, c in bubbleSpec(c, expanded: i == 0) })
+                for c in show {
+                    if let a = lingering[ObjectIdentifier(c)]?.answer { windowController.markBubbleAnswered(c, text: a) }
+                    else if c.state == .done { scheduleHide(c) }
+                }
             }
         }
 
         if let busy = conversations.first(where: { $0.state == .working || $0.state == .thinking }) {
             windowController.showWhisper("\(busy.topic) · \(busy.state == .thinking ? "想一想…" : "正在写…")")
+        } else if overflow > 0 {
+            windowController.showWhisper("还有 \(overflow) 条通知，点我看面板")
         } else {
             windowController.showWhisper(nil)
         }
         statusItem.refresh()
     }
 
-    private func showBubble(_ c: Conversation?) {
-        bubbleTimer?.invalidate()
-        bubbleTimer = nil
-        currentBubble = c
-        guard let c else {
-            windowController.hideBubble()
-            return
-        }
-        windowController.showBubble(
-            for: c,
+    private func bubbleSpec(_ c: Conversation, expanded: Bool) -> PetWindowController.BubbleSpec {
+        PetWindowController.BubbleSpec(
+            conversation: c, expanded: expanded,
             onOpen: { [weak self] in self?.openConversation(c) },
             onAnswer: { [weak self] text in self?.answer(c, text: text) },
-            onDismiss: { [weak self] in self?.dismissBubble(c) }
-        )
-        if c.state == .done {
-            scheduleBubbleHide(after: Settings.shared.doneBubbleSeconds)
-        }
+            onDismiss: { [weak self] in self?.dismissBubble(c) },
+            onExpand: { [weak self] in self?.focusBubble(c) })
     }
 
-    private func scheduleBubbleHide(after s: TimeInterval) {
-        bubbleTimer?.invalidate()
-        let t = Timer(timeInterval: s, repeats: false) { [weak self] _ in
-            guard let self, let c = self.currentBubble else { return }
-            // 用户还在气泡上（输入中 / 悬停）：先不收，过几秒再看
+    /// 「完成」气泡显示 20 秒后自动收起；用户正在气泡上（输入 / 悬停）就先不收
+    private func scheduleHide(_ c: Conversation, after s: TimeInterval? = nil) {
+        let key = ObjectIdentifier(c)
+        if s == nil, hideTimers[key] != nil { return }   // 已经在计时，别重置
+        hideTimers[key]?.invalidate()
+        let t = Timer(timeInterval: s ?? Settings.shared.doneBubbleSeconds, repeats: false) { [weak self, weak c] _ in
+            guard let self, let c else { return }
             if self.windowController.bubbleBusy {
-                self.scheduleBubbleHide(after: 6)
+                self.scheduleHide(c, after: 6)
                 return
             }
+            self.hideTimers.removeValue(forKey: ObjectIdentifier(c))
             self.dismissBubble(c)
         }
         RunLoop.main.add(t, forMode: .common)
-        bubbleTimer = t
-    }
-
-    private func hideBubble() {
-        bubbleTimer?.invalidate()
-        bubbleTimer = nil
-        currentBubble = nil
-        windowController.hideBubble()
+        hideTimers[key] = t
     }
 }
 
@@ -721,7 +757,10 @@ extension PetController {
                 respond(HTTPResponse(status: 400, json: ["error": "需要 JSON，至少含 topic"])); return
             }
             // 硬性关卡：对话里还没写正文就不收这条 notify，让 Claude 先把回复写出来
-            replyLengthForCaller(of: e) { [weak self] replyChars in
+            let check: (@escaping (Int?) -> Void) -> Void = { [weak self] done in
+                if e.test == true { done(nil) } else { self?.replyLengthForCaller(of: e, completion: done) }
+            }
+            check { [weak self] replyChars in
                 guard let self else { return }
                 let notifyChars = ((e.headline ?? "") + (e.points ?? []).joined()).count
                 // 一个字都没写就来通知 → 一定是想用通知代替回复；写了但很短而通知更长 → 同样可疑
@@ -734,6 +773,16 @@ extension PetController {
                 let id = self.handleNotify(e)
                 respond(HTTPResponse(json: ["id": id, "state": self.conversation(id: id)?.state.label ?? "", "replyChars": replyChars ?? -1]))
             }
+            return
+        }
+        if req.method == "POST", req.path == "/focus" {
+            // 诊断：等同于在面板里点某一条
+            let obj = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            guard let t = obj["topic"] as? String, let c = conversations.first(where: { $0.topic == t || $0.sidebarTitle == t }) else {
+                respond(HTTPResponse(status: 404, json: ["error": "没有这条对话"])); return
+            }
+            focusBubble(c)
+            respond(HTTPResponse(json: ["ok": true]))
             return
         }
         if req.method == "POST", req.path == "/answer" {

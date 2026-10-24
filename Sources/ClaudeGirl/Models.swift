@@ -69,9 +69,11 @@ struct NotifyEvent: Decodable {
     var options: [String]?
     var needsInput: Bool?
     var kind: String?
+    /// 诊断用：true 时不去猜它来自哪条对话（不会绑到正在生成的会话上）
+    var test: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case topic, headline, summary, points, question, options, kind
+        case topic, headline, summary, points, question, options, kind, test
         case needsInput = "needs_input"
     }
 

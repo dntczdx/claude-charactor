@@ -4,7 +4,7 @@ import QuartzCore
 /// 大小姐所在的透明窗口：动画、气泡、轻提示、拖拽、空闲时溜达
 final class PetWindowController: NSObject {
     static let spriteSize = NSSize(width: 260, height: 180)
-    static let windowSize = NSSize(width: 860, height: 560)
+    static let windowSize = NSSize(width: 860, height: 720)   // 高一点，装得下三条叠放的气泡
     /// 人物在窗口里的位置（窗口两侧各留一块放气泡）
     static let spriteOrigin = NSPoint(x: 300, y: 0)
 
@@ -12,7 +12,7 @@ final class PetWindowController: NSObject {
     private let content = NSView()
     private let spriteHost = SpriteHostView()
     private let player = SpritePlayer()
-    private var bubble: BubbleView?
+    // bubble: 见下方「气泡」一节（最下面那条）
     private var whisper: WhisperView?
     private var popover: NSPopover?
 
@@ -311,53 +311,88 @@ final class PetWindowController: NSObject {
         }
     }
 
-    // MARK: 气泡
+    // MARK: 气泡（最多叠放 3 条：最下面一条展开，上面的折叠成一行）
 
-    func showBubble(for c: Conversation, onOpen: @escaping () -> Void, onAnswer: @escaping (String) -> Void, onDismiss: @escaping () -> Void) {
-        hideBubble()
-        stopIdleBehaviour()
-        let onLeft = bubbleFitsOnLeft
-        let b = BubbleView(conversation: c, tailOnRight: onLeft)
-        b.onOpen = onOpen
-        b.onAnswer = onAnswer
-        b.onDismiss = onDismiss
-        content.addSubview(b)
-        if onLeft {
-            b.trailingAnchor.constraint(equalTo: spriteHost.leadingAnchor, constant: 60).isActive = true
-        } else {
-            b.leadingAnchor.constraint(equalTo: spriteHost.trailingAnchor, constant: -60).isActive = true
+    struct BubbleSpec {
+        let conversation: Conversation
+        let expanded: Bool
+        let onOpen: () -> Void
+        let onAnswer: (String) -> Void
+        let onDismiss: () -> Void
+        let onExpand: () -> Void
+    }
+    private var bubbleSpecs: [BubbleSpec] = []
+    private var bubblesOnLeft = true
+
+    /// 最下面那条（展开的）
+    private var bubble: BubbleView? { bubbles.first }
+    private var bubbles: [BubbleView] = []
+
+    /// 用户正在跟某条气泡打交道（悬停 / 输入中）
+    var bubbleBusy: Bool { bubbles.contains { $0.isBusyWithUser } }
+    var bubbleTopic: String? { bubble?.conversation.topic }
+    var visibleBubbleCount: Int { bubbles.count }
+    /// 诊断：每条气泡在窗口里的位置（x, y, w, h，y 向上），从下往上
+    var bubbleFrames: [[Int]] { bubbles.map { [Int($0.frame.minX), Int($0.frame.minY), Int($0.frame.width), Int($0.frame.height)] } }
+
+    /// 重建整叠气泡。specs[0] 在最下面、紧挨着大小姐
+    func setBubbles(_ specs: [BubbleSpec]) {
+        bubbleSpecs = specs
+        for b in bubbles { b.removeFromSuperview() }
+        bubbles = []
+        guard !specs.isEmpty else {
+            if pose == .idle { scheduleIdleBehaviour() }
+            return
         }
-        b.bottomAnchor.constraint(equalTo: spriteHost.bottomAnchor, constant: -100).isActive = true
+        stopIdleBehaviour()
+        bubblesOnLeft = bubbleFitsOnLeft
+        var previous: BubbleView?
+        for (i, spec) in specs.enumerated() {
+            let b = BubbleView(conversation: spec.conversation, tailOnRight: bubblesOnLeft, compact: !spec.expanded)
+            b.onOpen = spec.onOpen
+            b.onAnswer = spec.onAnswer
+            b.onDismiss = spec.onDismiss
+            b.onExpand = spec.onExpand
+            content.addSubview(b)
+            if bubblesOnLeft {
+                b.trailingAnchor.constraint(equalTo: spriteHost.leadingAnchor, constant: 60).isActive = true
+            } else {
+                b.leadingAnchor.constraint(equalTo: spriteHost.trailingAnchor, constant: -60).isActive = true
+            }
+            if let prev = previous {
+                b.bottomAnchor.constraint(equalTo: prev.topAnchor, constant: -8).isActive = true
+            } else {
+                b.bottomAnchor.constraint(equalTo: spriteHost.bottomAnchor, constant: -100).isActive = true
+            }
+            if i > 0 { b.alphaValue = 0.96 }
+            bubbles.append(b)
+            previous = b
+        }
         spriteHost.translatesAutoresizingMaskIntoConstraints = true
         content.layoutSubtreeIfNeeded()
-        bubble = b
-        b.animateIn()
+        bubble?.animateIn()
         window.orderFrontRegardless()
         // 不主动抢焦点：用户点输入框时窗口自然成为 key window
-        whisper?.isHidden = true
     }
 
-    /// 用户正在跟当前气泡打交道（悬停 / 输入中）
-    var bubbleBusy: Bool { bubble?.isBusyWithUser ?? false }
-    var bubbleTopic: String? { bubble?.conversation.topic }
+    /// 单条（兼容旧调用）
+    func showBubble(for c: Conversation, onOpen: @escaping () -> Void, onAnswer: @escaping (String) -> Void, onDismiss: @escaping () -> Void) {
+        setBubbles([BubbleSpec(conversation: c, expanded: true, onOpen: onOpen, onAnswer: onAnswer, onDismiss: onDismiss, onExpand: {})])
+    }
 
-    /// 回答后把气泡缩成一行
-    func markBubbleAnswered(_ text: String) {
-        bubble?.showAnswered(text)
+    /// 回答后把那条气泡缩成一行
+    func markBubbleAnswered(_ c: Conversation, text: String) {
+        bubbles.first { $0.conversation === c }?.showAnswered(text)
     }
 
     func hideBubble() {
-        bubble?.removeFromSuperview()
-        bubble = nil
-        whisper?.isHidden = false
-        if pose == .idle { scheduleIdleBehaviour() }
+        setBubbles([])
     }
 
+    /// 拖到另一侧放不下时才重建（重建会丢掉正在输入的文字）
     private func relayoutBubble() {
-        guard let b = bubble else { return }
-        let c = b.conversation
-        let onOpen = b.onOpen, onAnswer = b.onAnswer, onDismiss = b.onDismiss
-        showBubble(for: c, onOpen: onOpen ?? {}, onAnswer: onAnswer ?? { _ in }, onDismiss: onDismiss ?? {})
+        guard !bubbles.isEmpty, bubbleFitsOnLeft != bubblesOnLeft else { return }
+        setBubbles(bubbleSpecs)
     }
 
     // MARK: 轻提示
@@ -378,7 +413,6 @@ final class PetWindowController: NSObject {
             w.centerXAnchor.constraint(equalTo: spriteHost.centerXAnchor),
             w.bottomAnchor.constraint(equalTo: spriteHost.topAnchor, constant: -4),
         ])
-        w.isHidden = bubble != nil
         whisper = w
     }
 

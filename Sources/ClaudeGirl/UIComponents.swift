@@ -201,6 +201,10 @@ final class PillButton: NSButton {
 
 /// 气泡里的输入框
 final class ReplyField: NSTextField {
+    /// 按 Esc
+    var onEscape: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { onEscape?() }
+
     init(placeholder: String) {
         super.init(frame: .zero)
         let padded = PaddedCell(textCell: "")
@@ -266,10 +270,13 @@ final class BubbleView: NSView {
 
     let conversation: Conversation
     let tailOnRight: Bool
+    /// 折叠态：只有一行（徽标 + 结论），点一下展开
+    let compact: Bool
 
     var onOpen: (() -> Void)?
     var onAnswer: ((String) -> Void)?
     var onDismiss: (() -> Void)?
+    var onExpand: (() -> Void)?
 
     private let stack = NSStackView()
     private var replyRow: NSStackView?
@@ -278,15 +285,58 @@ final class BubbleView: NSView {
     private var hovering = false
     private var lastInteraction = Date.distantPast
 
-    init(conversation: Conversation, tailOnRight: Bool) {
+    init(conversation: Conversation, tailOnRight: Bool, compact: Bool = false) {
         self.conversation = conversation
         self.tailOnRight = tailOnRight
+        self.compact = compact
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        buildContent()
+        if compact { buildCompact() } else { buildContent() }
         layoutContent()
     }
+
+    /// 折叠态：一行徽标 + 结论，右边一个「知道了」
+    private func buildCompact() {
+        let c = conversation
+        let w = BubbleView.contentWidth
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let chip = ChipView(text: c.topic, state: c.state, maxWidth: 120)
+        let title: String = {
+            if c.state == .ask, let q = c.question, !q.isEmpty { return q }
+            return c.headline.isEmpty ? c.state.label : c.headline
+        }()
+        let label = NSTextField(labelWithString: title)
+        label.font = Fonts.heavy(13)
+        label.textColor = Palette.ink
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let ok = PillButton("知道了", style: .ghost, compact: true)
+        ok.target = self; ok.action = #selector(dismissTapped)
+        ok.setContentHuggingPriority(.required, for: .horizontal)
+        row.addArrangedSubview(chip)
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(ok)
+        row.widthAnchor.constraint(equalToConstant: w).isActive = true
+        stack.addArrangedSubview(row)
+        addSubview(stack)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        lastInteraction = Date()
+        if compact, bounds.contains(convert(event.locationInWindow, from: nil)) { onExpand?() }
+        super.mouseUp(with: event)
+    }
+    override func resetCursorRects() { if compact { addCursorRect(bounds, cursor: .pointingHand) } }
     required init?(coder: NSCoder) { fatalError() }
 
     /// 用户正在跟这个气泡打交道：鼠标停在上面、输入框有焦点或已经打了字、几秒内点过东西。
@@ -422,6 +472,12 @@ final class BubbleView: NSView {
         let field = ReplyField(placeholder: c.options.isEmpty ? "输入回答，回车发送" : "或者直接说…")
         field.target = self
         field.action = #selector(sendReply(_:))
+        field.onEscape = { [weak self] in
+            guard let self else { return }
+            if let f = self.replyField, !f.stringValue.isEmpty { f.stringValue = ""; return }   // 先清空，再按一次才收起
+            self.window?.makeFirstResponder(nil)
+            self.onDismiss?()
+        }
         let send = PillButton("→", style: .send)
         send.target = self
         send.action = #selector(sendReply(_:))
