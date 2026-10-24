@@ -407,6 +407,45 @@ final class ClaudeBridge {
         return out
     }
 
+    // MARK: 读取前台对话里 Claude 最后一条回复
+
+    /// 前台对话里 Claude 最后一条回复的文字（按段落），用于 Claude 没调用 notify 时的兜底气泡。
+    /// 消息是 AXDocumentArticle，标题「Claude responded: …」；正文是其中的 AXStaticText。
+    func readLastReply(completion: @escaping ([String]) -> Void) {
+        axQueue.async { [weak self] in
+            guard let self, self.isTrusted, let win = self.mainWindow() else { DispatchQueue.main.async { completion([]) }; return }
+            var lastClaude: AXUIElement?
+            self.walk(win, maxNodes: 30000, maxDepth: 60) { el, _ in
+                guard self.role(el) == "AXGroup", (self.str(el, kAXSubroleAttribute) ?? "") == "AXDocumentArticle" else { return false }
+                // 标题（AXHeading）说明是谁说的
+                var heading: String?
+                self.walk(el, maxNodes: 40, maxDepth: 3) { h, _ in
+                    if self.role(h) == "AXHeading" { heading = self.str(h, kAXTitleAttribute); return true }
+                    return false
+                }
+                if let h = heading, h.hasPrefix("Claude responded") || h.hasPrefix("Claude 回复") { lastClaude = el }
+                return false
+            }
+            var lines: [String] = []
+            if let art = lastClaude {
+                self.walk(art, maxNodes: 600, maxDepth: 12) { el, _ in
+                    let r = self.role(el)
+                    if r == "AXToolbar" { return false }
+                    if r == "AXStaticText", let v = self.str(el, kAXValueAttribute) {
+                        let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !t.isEmpty, !t.hasPrefix("Claude responded"), !t.hasPrefix("Claude 回复") {
+                            // 行内片段（加粗词后面接「：…」之类）并回上一段
+                            if let f = t.first, "：:，,。；;、）)".contains(f), !lines.isEmpty { lines[lines.count - 1] += t }
+                            else { lines.append(t) }
+                        }
+                    }
+                    return false
+                }
+            }
+            DispatchQueue.main.async { completion(lines) }
+        }
+    }
+
     // MARK: 诊断：导出窗口结构
 
     /// 把 Claude 窗口的辅助功能树（前 N 个节点）写到 ~/Library/Logs/ClaudeGirl-axdump.txt

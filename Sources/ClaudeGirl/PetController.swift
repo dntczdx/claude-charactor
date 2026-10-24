@@ -398,16 +398,7 @@ final class PetController: NSObject {
                 Log.info("兜底提醒取消：\(c.topic) 还在生成")
                 return
             }
-            c.state = .done
-            c.headline = "这条回复写完了"
-            c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]
-            c.question = nil
-            c.options = []
-            c.requestId = nil
-            c.updatedAt = Date()
-            c.unread = true
-            self.bump(c)
-            self.recompute()
+            self.finishWithoutNotify(c)
         }
         RunLoop.main.add(t, forMode: .common)
         fallbackTimers[key] = t
@@ -515,20 +506,41 @@ final class PetController: NSObject {
                     Log.info("兜底提醒取消：\(c.topic) 还在生成")
                     return
                 }
-                c.state = .done
-                c.headline = "这条回复写完了"
-                c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]
-                c.question = nil
-                c.options = []
-                c.requestId = nil
-                c.updatedAt = Date()
-                c.unread = true
-                self.bump(c)
-                self.recompute()
+                self.finishWithoutNotify(c)
             }
             RunLoop.main.add(t, forMode: .common)
             axFallbackTimer = t
         }
+    }
+
+    /// Claude 没调用 notify 的兜底完成气泡：对话在前台就摘录它最后一条回复的开头，否则只提示写完了
+    private func finishWithoutNotify(_ c: Conversation) {
+        let title = c.sidebarTitle ?? c.topic
+        let inFront = bridge.currentChatID != nil && bridge.currentChatID == c.chatID
+            || (bridge.currentTitle.map { ClaudeBridge.similarity($0, title) >= 0.8 } ?? false)
+        let apply: ([String]) -> Void = { [weak self] lines in
+            guard let self else { return }
+            c.state = .done
+            if let first = lines.first {
+                c.headline = Self.clip(first, 70)
+                c.points = lines.dropFirst().prefix(2).map { Self.clip($0, 80) } + ["（Claude 没调用 notify，这是回复开头）"]
+            } else {
+                c.headline = "这条回复写完了"
+                c.points = ["Claude 这次没调用 notify，点「打开对话」看原文"]
+            }
+            c.question = nil
+            c.options = []
+            c.requestId = nil
+            c.updatedAt = Date()
+            c.unread = true
+            self.bump(c)
+            self.recompute()
+        }
+        if inFront { bridge.readLastReply(completion: apply) } else { apply([]) }
+    }
+
+    private static func clip(_ s: String, _ n: Int) -> String {
+        s.count <= n ? s : String(s.prefix(n - 1)) + "…"
     }
 
     private func cancelAXFallback() {
@@ -653,6 +665,10 @@ extension PetController {
                     respond(HTTPResponse(json: ["answered": false]))
                 }
             }
+            return
+        }
+        if req.method == "GET", req.path == "/lastreply" {
+            bridge.readLastReply { lines in respond(HTTPResponse(json: ["lines": lines])) }
             return
         }
         if req.method == "GET", req.path == "/dump" {
