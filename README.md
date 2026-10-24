@@ -88,8 +88,10 @@ scripts/install-mcp.sh
      侧栏行标题前缀（Running / Idle / Mark as unread…）同时用来判断哪条对话正在生成。
    - **是否还在生成**：前台看「停止」按钮（连续两次读不到才算结束），再对照侧栏行状态和 Code 登记表；
      三者都说结束，4 秒内没收到 `notify`，才弹兜底气泡：对话在前台就摘录 Claude 最后一条回复的开头，否则只提示写完了。
-   - **聊天 / Cowork 页里 Claude 不会主动调用 `notify`**（Claude Code 会读 MCP 服务器的说明，聊天页不会）：
-     要把 `mcp/CLAUDE_PREFERENCES.md` 那段话贴进 Settings → Instructions for Claude，且只对新开的对话生效。
+   - **notify 归属**：先在正在生成的 Code 会话的对话记录里核实这次的 headline，核实到就绑给它；
+     否则绑给前台正在生成的聊天对话；再否则绑给侧栏唯一 Running 的行；都没有、且没有聊天在生成时才归给唯一在生成的 Code 会话。
+   - **聊天页里 Claude 不会主动调用 `notify`**（Claude Code 会读 MCP 服务器的说明，聊天页不会）：
+     要把 `mcp/CLAUDE_PREFERENCES.md` 那段话贴进 Settings → Account → Instructions for Claude，且只对新开的对话生效。
 
 本地接口（只监听 127.0.0.1，端口 47333）：
 
@@ -101,6 +103,7 @@ scripts/install-mcp.sh
 | POST | `/status` | `{topic?, state: working\|thinking\|idle}` 只改姿态 |
 | GET | `/debug` | 诊断：登记表里的会话、已知对话与绑定的 ID、前台对话 |
 | POST | `/open` | 诊断：`{topic}` 或 `{id}`，等同于点气泡里的「打开对话」 |
+| POST | `/send` | 诊断：`{text, topic?, id?}` 切到对话并替你发送一句（需要辅助功能） |
 | GET | `/lastreply` | 诊断：读前台对话里 Claude 最后一条回复的段落 |
 | GET | `/dump` | 诊断：把 Claude 窗口的辅助功能树写到 `~/Library/Logs/ClaudeGirl-axdump.txt` |
 

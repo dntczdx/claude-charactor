@@ -136,7 +136,9 @@ final class PetController: NSObject {
         let c = conversation(forTopic: e.topic)
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
-        if let s = SessionRegistry.caller(topic: c.topic, headline: c.headline) {
+        // 没有聊天对话在生成（前台没在生成、侧栏也没有 Running 行）时，才允许把 notify 归给唯一在生成的 Code 会话
+        let chatBusy = (bridgeGenerating && (bridge.currentChatID.map { !$0.hasPrefix("epitaxy/") } ?? true)) || !sidebarBusyTitles.isEmpty
+        if let s = SessionRegistry.caller(topic: c.topic, headline: c.headline, confirmedOnly: chatBusy) {
             // 正在生成的 Code 会话就是发 notify 的那条：直接绑定 ID 和侧栏标题
             if let other = conversations.first(where: { $0 !== c && $0.chatID == s.chatID }) {
                 // 同一会话之前用别的 topic 记过：合并到旧的那条上
@@ -146,6 +148,15 @@ final class PetController: NSObject {
             c.chatID = s.chatID
             if !s.name.isEmpty { c.sidebarTitle = s.name }
             Log.info("notify 绑定到 Code 会话 \(s.hostID.prefix(14)) 「\(s.name)」")
+        } else if c.chatID == nil, bridgeGenerating, let fid = bridge.currentChatID, !fid.hasPrefix("epitaxy/") {
+            // 前台是正在生成的聊天对话：notify 就是它发的
+            if let other = conversations.first(where: { $0 !== c && $0.chatID == fid }) {
+                conversations.removeAll { $0 === other }
+                if axConversation === other { axConversation = c }
+            }
+            c.chatID = fid
+            if let t = bridge.currentTitle { c.sidebarTitle = t }
+            Log.info("notify 绑定到前台正在生成的对话「\(bridge.currentTitle ?? "-")」")
         } else if c.chatID == nil, sidebarBusyTitles.count == 1, let t = sidebarBusyTitles.first {
             if let other = conversations.first(where: { $0 !== c && $0.sidebarTitle == t }) {
                 conversations.removeAll { $0 === other }
@@ -156,6 +167,15 @@ final class PetController: NSObject {
             Log.info("notify 绑定到侧栏正在生成的对话「\(t)」")
         }
         linkToForegroundConversation(c)
+        // 同一对话 ID 只留这一条（把辅助功能建的壳合并掉）
+        if let id = c.chatID {
+            for other in conversations where other !== c && other.chatID == id {
+                if c.sidebarTitle == nil { c.sidebarTitle = other.sidebarTitle }
+                if axConversation === other { axConversation = c }
+                for (k, v) in activeKeys where v === other { activeKeys[k] = c }
+            }
+            conversations.removeAll { $0 !== c && $0.chatID == id }
+        }
         Log.info("notify topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) sidebar=\(c.sidebarTitle ?? "-") chat=\(c.chatID.map(Self.shortID) ?? "-")")
         cancelAXFallback()
         for key in fallbackTimers.keys where activeKeys[key] === c || key == c.chatID || key == "row:" + (c.sidebarTitle ?? "") {
@@ -475,7 +495,9 @@ final class PetController: NSObject {
         let topic = title ?? "当前对话"
         if generating {
             cancelAXFallback()
-            let c = conversation(forTopic: topic)
+            // 同一个对话 ID 已有记录（notify 先到、或刚才还没标题时建的壳）就沿用，别再建一条
+            let c = chatID.flatMap { id in conversations.first { $0.chatID == id } } ?? conversation(forTopic: topic)
+            if let title, c.topic == "当前对话" { c.topic = title }
             if let chatID { c.chatID = chatID }
             if let title, c.sidebarTitle == nil { c.sidebarTitle = title }
             axConversation = c
@@ -665,6 +687,14 @@ extension PetController {
                     respond(HTTPResponse(json: ["answered": false]))
                 }
             }
+            return
+        }
+        if req.method == "POST", req.path == "/send" {
+            // 诊断：切到某条对话（没给就是当前页面），把 text 填进输入框并回车发送
+            let obj = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            guard let text = obj["text"] as? String, !text.isEmpty else { respond(HTTPResponse(status: 400, json: ["error": "需要 text"])); return }
+            let ref = ChatRef(id: obj["id"] as? String, titles: [(obj["topic"] as? String) ?? ""].filter { !$0.isEmpty })
+            bridge.deliver(text, chat: ref) { ok in respond(HTTPResponse(json: ["ok": ok])) }
             return
         }
         if req.method == "GET", req.path == "/lastreply" {

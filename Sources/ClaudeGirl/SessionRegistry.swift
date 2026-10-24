@@ -53,19 +53,19 @@ enum SessionRegistry {
         return out.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    /// 猜 notify 来自哪条会话：正在生成的那条；几条都在生成时，看谁的对话记录尾部出现了这次的 topic/headline；
-    /// 再不行取状态最新的那条。
-    static func caller(topic: String, headline: String, sessions: [CodeSession]? = nil) -> CodeSession? {
+    /// notify 来自哪条 Code 会话：正在生成、且对话记录尾部出现了这次的 headline/topic 的那条。
+    /// 聊天页的对话也会调 notify，所以光「有一条 Code 会话在生成」不够，必须在记录里核实。
+    /// `confirmedOnly == false` 时退而取唯一在生成的那条（调用方确认没有聊天对话在生成时用）。
+    static func caller(topic: String, headline: String, sessions: [CodeSession]? = nil, confirmedOnly: Bool = true) -> CodeSession? {
         let all = sessions ?? snapshot()
         let busy = all.filter(\.busy).sorted { $0.statusUpdatedAt > $1.statusUpdatedAt }
         if busy.isEmpty { return nil }
-        if busy.count == 1 { return busy[0] }
-        let needles = [headline, topic].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 4 }
+        let needles = [headline, topic].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { $0.count >= 2 }
         for s in busy {
-            guard let url = s.transcriptURL, let tail = tail(of: url, bytes: 200_000) else { continue }
+            guard let url = s.transcriptURL, let tail = tail(of: url, bytes: 300_000) else { continue }
             if needles.contains(where: { tail.contains($0) || tail.contains(jsonEscaped($0)) }) { return s }
         }
-        return busy[0]
+        return (!confirmedOnly && busy.count == 1) ? busy[0] : nil
     }
 
     private static func jsonEscaped(_ s: String) -> String {
