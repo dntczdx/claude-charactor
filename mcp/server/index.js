@@ -52,7 +52,8 @@ server.registerTool(
     title: "通知桌面上的克劳德大小姐",
     description:
       "把这一轮回复的结论通知给桌面上的桌宠，用户不盯着 Claude 窗口也能看到。" +
-      "这只是通知：完整回复仍要正常写在对话里，不要用这个工具代替回复。在回复写完后的最后调用一次。" +
+      "顺序必须是：先在对话里写完完整的回复，再调用它；它只是已写回复的摘要，绝不能代替回复。" +
+      "对话里还没有正文时调用会被拒绝（返回 ⚠️），届时请先写回复再调。" +
       "如果附带 question（可加 options），工具会等用户在气泡里点选项或打字，" +
       "并把回答作为结果返回；等不到会返回提示，届时请结束本轮，用户稍后的回答会以新消息到达。",
     inputSchema: {
@@ -83,6 +84,14 @@ server.registerTool(
     } catch (e) {
       console.error(`[claude-girl] notify 失败: ${e && e.message}`);
       return text(`（桌宠 app 没在运行或没连上 ${BASE}，这次没通知到；不影响你继续。）`);
+    }
+
+    if (res && res.rejected) {
+      console.error(`[claude-girl] notify 被拒：对话正文只有 ${res.replyChars} 字`);
+      return text(
+        `⚠️ 这次通知没有发出：对话里还没有写回复（桌宠只看到 ${res.replyChars} 字正文），` +
+          "而通知里却带着结论。用户看的是对话，不是通知。请现在先在对话里写出完整的回复，写完之后再调用一次 notify。"
+      );
     }
 
     if (!isQuestion) {

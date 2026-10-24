@@ -68,6 +68,27 @@ enum SessionRegistry {
         return (!confirmedOnly && busy.count == 1) ? busy[0] : nil
     }
 
+    /// 这条会话本轮（最后一条人类消息之后）已经写进对话的正文字数：对话记录里 type=assistant 的 text 块
+    static func replyLength(of s: CodeSession) -> Int? {
+        guard let url = s.transcriptURL, let t = tail(of: url, bytes: 600_000) else { return nil }
+        var chars = 0
+        for line in t.split(separator: "\n").reversed() {
+            guard let d = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let type = d["type"] as? String, let msg = d["message"] as? [String: Any] else { continue }
+            let content = msg["content"]
+            if type == "user" {
+                // 人类消息：content 是字符串，或 text 块数组；tool_result 数组不算
+                if content is String { break }
+                if let arr = content as? [[String: Any]], arr.first?["type"] as? String == "text" { break }
+            } else if type == "assistant", let arr = content as? [[String: Any]] {
+                for b in arr where b["type"] as? String == "text" {
+                    chars += ((b["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).count
+                }
+            }
+        }
+        return chars
+    }
+
     private static func jsonEscaped(_ s: String) -> String {
         guard let d = try? JSONSerialization.data(withJSONObject: [s]), let str = String(data: d, encoding: .utf8) else { return s }
         return String(str.dropFirst(2).dropLast(2))   // 去掉 ["…"]

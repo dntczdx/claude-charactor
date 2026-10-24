@@ -86,13 +86,6 @@ final class PetController: NSObject {
         case ("GET", "/health"):
             return HTTPResponse(json: ["ok": true, "version": Self.version, "accessibility": bridge.isTrusted, "conversations": conversations.count])
 
-        case ("POST", "/notify"):
-            guard let e = req.json(NotifyEvent.self), !e.topic.trimmingCharacters(in: .whitespaces).isEmpty else {
-                return HTTPResponse(status: 400, json: ["error": "需要 JSON，至少含 topic"])
-            }
-            let id = handleNotify(e)
-            return HTTPResponse(json: ["id": id, "state": conversation(id: id)?.state.label ?? ""])
-
         case ("GET", "/debug"):
             let sessions = SessionRegistry.snapshot().map { ["id": $0.chatID, "name": $0.name, "busy": $0.busy, "pid": Int($0.pid)] as [String: Any] }
             let convs = conversations.map { ["topic": $0.topic, "sidebar": $0.sidebarTitle ?? "", "chat": $0.chatID ?? "", "state": $0.state.label] }
@@ -535,6 +528,21 @@ final class PetController: NSObject {
         }
     }
 
+    /// 发这条 notify 的对话，本轮已经写了多少字正文；判断不了（对话不在前台、也不是 Code 会话）给 nil
+    private func replyLengthForCaller(of e: NotifyEvent, completion: @escaping (Int?) -> Void) {
+        let chatBusy = (bridgeGenerating && (bridge.currentChatID.map { !$0.hasPrefix("epitaxy/") } ?? true)) || !sidebarBusyTitles.isEmpty
+        let headline = (e.headline ?? e.summary ?? e.question ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let s = SessionRegistry.caller(topic: e.topic, headline: headline, confirmedOnly: chatBusy) {
+            completion(SessionRegistry.replyLength(of: s))
+            return
+        }
+        if bridgeGenerating, let fid = bridge.currentChatID, !fid.hasPrefix("epitaxy/") {
+            bridge.readLastReply { lines in completion(lines.joined().count) }
+            return
+        }
+        completion(nil)
+    }
+
     /// Claude 没调用 notify 的兜底完成气泡：对话在前台就摘录它最后一条回复的开头，否则只提示写完了
     private func finishWithoutNotify(_ c: Conversation) {
         let title = c.sidebarTitle ?? c.topic
@@ -686,6 +694,24 @@ extension PetController {
                 } else {
                     respond(HTTPResponse(json: ["answered": false]))
                 }
+            }
+            return
+        }
+        if req.method == "POST", req.path == "/notify" {
+            guard let e = req.json(NotifyEvent.self), !e.topic.trimmingCharacters(in: .whitespaces).isEmpty else {
+                respond(HTTPResponse(status: 400, json: ["error": "需要 JSON，至少含 topic"])); return
+            }
+            // 硬性关卡：对话里还没写正文就不收这条 notify，让 Claude 先把回复写出来
+            replyLengthForCaller(of: e) { [weak self] replyChars in
+                guard let self else { return }
+                let notifyChars = ((e.headline ?? "") + (e.points ?? []).joined()).count
+                if let n = replyChars, n < 20, notifyChars > n + 20 {
+                    Log.info("notify 被拒：topic=\(e.topic) 对话正文只有 \(n) 字，通知却有 \(notifyChars) 字")
+                    respond(HTTPResponse(json: ["rejected": true, "replyChars": n]))
+                    return
+                }
+                let id = self.handleNotify(e)
+                respond(HTTPResponse(json: ["id": id, "state": self.conversation(id: id)?.state.label ?? "", "replyChars": replyChars ?? -1]))
             }
             return
         }

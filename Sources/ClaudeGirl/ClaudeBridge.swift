@@ -433,7 +433,7 @@ final class ClaudeBridge {
                     if r == "AXToolbar" { return false }
                     if r == "AXStaticText", let v = self.str(el, kAXValueAttribute) {
                         let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !t.isEmpty, !t.hasPrefix("Claude responded"), !t.hasPrefix("Claude 回复") {
+                        if !t.isEmpty, !t.hasPrefix("Claude responded"), !t.hasPrefix("Claude 回复"), !Self.isChrome(t) {
                             // 行内片段（加粗词后面接「：…」之类）并回上一段
                             if let f = t.first, "：:，,。；;、）)".contains(f), !lines.isEmpty { lines[lines.count - 1] += t }
                             else { lines.append(t) }
@@ -444,6 +444,14 @@ final class ClaudeBridge {
             }
             DispatchQueue.main.async { completion(lines) }
         }
+    }
+
+    /// 消息块里不是正文的行：折叠的工具调用摘要、时间戳
+    private static func isChrome(_ t: String) -> Bool {
+        let l = t.lowercased()
+        if l.contains("claude-girl integration") || l.hasPrefix("loaded tools") || l.hasPrefix("searched the web") || l.hasPrefix("used ") { return true }
+        if l == "just now" || l.hasSuffix(" ago") || l.hasPrefix("oct ") || l.hasPrefix("nov ") { return true }
+        return false
     }
 
     // MARK: 诊断：导出窗口结构
