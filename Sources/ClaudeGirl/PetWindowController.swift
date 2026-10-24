@@ -337,6 +337,10 @@ final class PetWindowController: NSObject {
         whisper?.isHidden = true
     }
 
+    /// 用户正在跟当前气泡打交道（悬停 / 输入中）
+    var bubbleBusy: Bool { bubble?.isBusyWithUser ?? false }
+    var bubbleTopic: String? { bubble?.conversation.topic }
+
     /// 回答后把气泡缩成一行
     func markBubbleAnswered(_ text: String) {
         bubble?.showAnswered(text)

@@ -275,6 +275,8 @@ final class BubbleView: NSView {
     private var replyRow: NSStackView?
     private var replyField: ReplyField?
     private var picked: String?
+    private var hovering = false
+    private var lastInteraction = Date()
 
     init(conversation: Conversation, tailOnRight: Bool) {
         self.conversation = conversation
@@ -286,6 +288,26 @@ final class BubbleView: NSView {
         layoutContent()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// 用户正在跟这个气泡打交道：鼠标停在上面、输入框有焦点或已经打了字、几秒内点过东西。
+    /// 此时不能自动收起，也不能被别的通知顶掉。
+    var isBusyWithUser: Bool {
+        if hovering { return true }
+        if let f = replyField {
+            if f.currentEditor() != nil { return true }
+            if !f.stringValue.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        }
+        return Date().timeIntervalSince(lastInteraction) < 5
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for t in trackingAreas { removeTrackingArea(t) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true; lastInteraction = Date() }
+    override func mouseExited(with event: NSEvent) { hovering = false; lastInteraction = Date() }
+    override func mouseDown(with event: NSEvent) { lastInteraction = Date(); super.mouseDown(with: event) }
 
     // 气泡主体（不含尾巴与阴影）在自身坐标里的矩形
     private var bodyRect: NSRect {

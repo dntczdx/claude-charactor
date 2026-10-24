@@ -90,6 +90,7 @@ final class PetController: NSObject {
             let sessions = SessionRegistry.snapshot().map { ["id": $0.chatID, "name": $0.name, "busy": $0.busy, "pid": Int($0.pid)] as [String: Any] }
             let convs = conversations.map { ["topic": $0.topic, "sidebar": $0.sidebarTitle ?? "", "chat": $0.chatID ?? "", "state": $0.state.label] }
             return HTTPResponse(json: ["accessibility": bridge.isTrusted, "foregroundTitle": bridge.currentTitle ?? "", "foregroundChat": bridge.currentChatID ?? "",
+                                       "bubble": windowController.bubbleTopic ?? "", "bubbleBusy": windowController.bubbleBusy,
                                        "sessions": sessions, "conversations": convs, "registry": Settings.shared.chatRegistry])
 
         case ("POST", "/open"):
@@ -637,7 +638,12 @@ final class PetController: NSObject {
             }
             .first
         if next !== currentBubble {
-            showBubble(next)
+            // 用户正在当前气泡里输入或悬停：别换，新来的留在队列里，等这条收起再露出来
+            if currentBubble != nil, windowController.bubbleBusy {
+                Log.info("气泡忙（输入/悬停中），暂不切换到「\(next?.topic ?? "-")」")
+            } else {
+                showBubble(next)
+            }
         }
 
         if let busy = conversations.first(where: { $0.state == .working || $0.state == .thinking }) {
@@ -671,6 +677,11 @@ final class PetController: NSObject {
         bubbleTimer?.invalidate()
         let t = Timer(timeInterval: s, repeats: false) { [weak self] _ in
             guard let self, let c = self.currentBubble else { return }
+            // 用户还在气泡上（输入中 / 悬停）：先不收，过几秒再看
+            if self.windowController.bubbleBusy {
+                self.scheduleBubbleHide(after: 6)
+                return
+            }
             self.dismissBubble(c)
         }
         RunLoop.main.add(t, forMode: .common)
