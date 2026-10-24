@@ -75,7 +75,11 @@ final class ClaudeBridge {
                 usedDeepLink = true
                 Log.info("跳转 \(url.absoluteString) 已发出")
             }
-            guard self.isTrusted, chat.id != nil || !titles.isEmpty else { completion(ok); return }
+            guard self.isTrusted, chat.id != nil || !titles.isEmpty else {
+                // 没法核对：有深链接就当发出去了；什么都没有就只是激活了窗口，算失败
+                completion(ok && usedDeepLink)
+                return
+            }
             // 辅助功能可用：核对是否到了，没到再走侧栏 / 搜索
             self.after(usedDeepLink ? 1.4 : 0.6) {
                 self.axQueue.async {
@@ -86,18 +90,39 @@ final class ClaudeBridge {
         }
     }
 
-    /// 切到对话，把 text 填进输入框，回车发送
+    /// 切到对话，把 text 填进输入框，回车发送。
+    /// 只有确认已经到了目标对话才会打字：切换失败绝不能把答案发进别的对话。
     func deliver(_ text: String, chat: ChatRef, completion: @escaping (Bool) -> Void) {
-        guard isTrusted else { completion(false); return }
-        open(chat: chat) { [weak self] _ in
+        guard isTrusted, chat.id != nil || !chat.titles.isEmpty else { completion(false); return }
+        open(chat: chat) { [weak self] arrived in
             guard let self else { completion(false); return }
+            guard arrived else {
+                Log.info("deliver 取消：没能确认切到目标对话，不打字")
+                completion(false)
+                return
+            }
             self.after(0.9) {
                 self.axQueue.async {
+                    // 打字前再核对一次：前台就是目标对话（按 ID，或标题高度相似）
+                    guard let w = self.mainWindow(), self.isAt(chat, window: w) else {
+                        Log.info("deliver 取消：打字前核对前台不是目标对话")
+                        DispatchQueue.main.async { completion(false) }
+                        return
+                    }
                     let ok = self.typeIntoComposer(text)
                     DispatchQueue.main.async { completion(ok) }
                 }
             }
         }
+    }
+
+    /// 前台是不是 chat 指向的那条对话：有 ID 就必须 ID 一致；只有标题就要求相似度 ≥ 0.85
+    private func isAt(_ chat: ChatRef, window: AXUIElement) -> Bool {
+        if let id = chat.id {
+            return currentChatID(window: window) == Self.normalizeID(id)
+        }
+        guard let cur = currentConversationTitle(window: window) else { return false }
+        return chat.titles.contains { Self.similarity($0, cur) >= 0.85 }
     }
 
     // MARK: 观察生成状态

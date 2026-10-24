@@ -137,6 +137,7 @@ final class PetController: NSObject {
         let c = conversation(forTopic: e.topic)
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
         c.apply(e, requestId: id)
+        c.isTest = e.test == true
         // 没有聊天对话在生成（前台没在生成、侧栏也没有 Running 行）时，才允许把 notify 归给唯一在生成的 Code 会话
         let chatBusy = (bridgeGenerating && (bridge.currentChatID.map { !$0.hasPrefix("epitaxy/") } ?? true)) || !sidebarBusyTitles.isEmpty
         if e.test == true {
@@ -276,9 +277,17 @@ final class PetController: NSObject {
             Log.info("answer 「\(text)」→ 暂存，等 MCP 来取 id=\(rid.prefix(8))")
             pendingAnswers[rid] = text
             c.state = .working
+        } else if c.isTest || (c.chatID == nil && c.sidebarTitle == nil) {
+            // 演示气泡、或根本不知道属于哪条对话：只记下来，不往任何对话里填（填错对话比不填糟糕得多）
+            Log.info("answer 「\(text)」→ 这条没有对应的真实对话，不发送")
+            c.state = .idle
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            windowController.showWhisper(c.isTest ? "这是演示气泡，回答没有发出" : "不知道这条属于哪个对话，答案已复制到剪贴板")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.recompute() }
         } else {
-            // 走辅助功能：切到那条对话，把答案填进输入框发出去
-            Log.info("answer 「\(text)」→ 走辅助功能填进对话 titles=\(c.titlesForLookup)")
+            // 走辅助功能：切到那条对话，把答案填进输入框发出去（切不到就不发）
+            Log.info("answer 「\(text)」→ 走辅助功能填进对话 id=\(c.chatID ?? "-") titles=\(c.titlesForLookup)")
             c.state = .working
             bridge.deliver(text, chat: c.chatRef) { [weak self] ok in
                 guard let self else { return }

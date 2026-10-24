@@ -101,6 +101,8 @@ final class Conversation {
     /// 对话的唯一 ID（claude.ai/chat/<uuid>），有它跳转就不用猜
     var chatID: String?
     var state: ConvState = .idle
+    /// 诊断 / 演示通知建的对话：回答只记下来，绝不往任何真实对话里填
+    var isTest = false
 
     /// 跳转/定位时依次尝试的标题
     var titlesForLookup: [String] { [sidebarTitle, topic].compactMap { $0 } }
