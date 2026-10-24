@@ -69,23 +69,31 @@ enum SessionRegistry {
     }
 
     /// 这条会话本轮（最后一条人类消息之后）已经写进对话的正文字数：对话记录里 type=assistant 的 text 块
+    /// 记录里夹着整段上下文的 api-request-blob 行（可达几 MB），所以尾部要读得够多，并且先按前缀筛掉无关行再解析。
+    /// 没在窗口里找到本轮的人类消息（看不清边界）就返回 nil（未知），只在确认「人类消息之后一个字没写」时才返回 0。
     static func replyLength(of s: CodeSession) -> Int? {
-        guard let url = s.transcriptURL, let t = tail(of: url, bytes: 600_000) else { return nil }
+        guard let url = s.transcriptURL, let t = tail(of: url, bytes: 8_000_000) else { return nil }
         var chars = 0
+        var foundHuman = false
         for line in t.split(separator: "\n").reversed() {
+            let head = line.prefix(400)
+            let isUser = head.contains("\"type\":\"user\"")
+            let isAssistant = head.contains("\"type\":\"assistant\"")
+            guard isUser || isAssistant else { continue }
             guard let d = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                   let type = d["type"] as? String, let msg = d["message"] as? [String: Any] else { continue }
             let content = msg["content"]
             if type == "user" {
                 // 人类消息：content 是字符串，或 text 块数组；tool_result 数组不算
-                if content is String { break }
-                if let arr = content as? [[String: Any]], arr.first?["type"] as? String == "text" { break }
+                if content is String { foundHuman = true; break }
+                if let arr = content as? [[String: Any]], arr.first?["type"] as? String == "text" { foundHuman = true; break }
             } else if type == "assistant", let arr = content as? [[String: Any]] {
                 for b in arr where b["type"] as? String == "text" {
                     chars += ((b["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).count
                 }
             }
         }
+        if !foundHuman && chars == 0 { return nil }
         return chars
     }
 

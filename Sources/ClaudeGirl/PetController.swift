@@ -538,7 +538,10 @@ final class PetController: NSObject {
         let chatBusy = (bridgeGenerating && (bridge.currentChatID.map { !$0.hasPrefix("epitaxy/") } ?? true)) || !sidebarBusyTitles.isEmpty
         let headline = (e.headline ?? e.summary ?? e.question ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if let s = SessionRegistry.caller(topic: e.topic, headline: headline, confirmedOnly: chatBusy) {
-            completion(SessionRegistry.replyLength(of: s))
+            // Claude Code 把正文和工具调用放在同一条消息里，工具执行时这条消息还没写进对话记录，
+            // 记录里的字数只能当参考，不能据此拒绝（Code 会话本来也不会把回复只塞进通知）
+            Log.info("Code 会话「\(s.name)」记录里本轮正文 \(SessionRegistry.replyLength(of: s).map(String.init) ?? "未知") 字（仅参考）")
+            completion(nil)
             return
         }
         if bridgeGenerating, let fid = bridge.currentChatID, !fid.hasPrefix("epitaxy/") {
