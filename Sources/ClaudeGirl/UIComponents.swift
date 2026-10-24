@@ -276,7 +276,7 @@ final class BubbleView: NSView {
     private var replyField: ReplyField?
     private var picked: String?
     private var hovering = false
-    private var lastInteraction = Date()
+    private var lastInteraction = Date.distantPast
 
     init(conversation: Conversation, tailOnRight: Bool) {
         self.conversation = conversation
