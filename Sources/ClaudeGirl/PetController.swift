@@ -710,6 +710,7 @@ extension PetController {
                     respond(HTTPResponse(json: ["rejected": true, "replyChars": n]))
                     return
                 }
+                Log.info("notify 核对正文：topic=\(e.topic) 正文 \(replyChars.map(String.init) ?? "未知") 字，通知 \(notifyChars) 字")
                 let id = self.handleNotify(e)
                 respond(HTTPResponse(json: ["id": id, "state": self.conversation(id: id)?.state.label ?? "", "replyChars": replyChars ?? -1]))
             }
