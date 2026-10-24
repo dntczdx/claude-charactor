@@ -512,6 +512,11 @@ final class PetController: NSObject {
             }
         } else {
             axThinkTimer?.invalidate()
+            // 标题通常在生成结束前后才出现：给按 ID 建的「当前对话」壳补上名字
+            if let title, let chatID, let c = conversations.first(where: { $0.chatID == chatID }) {
+                if c.topic == "当前对话" { c.topic = title }
+                if c.sidebarTitle == nil || c.sidebarTitle == "" { c.sidebarTitle = title }
+            }
             guard let c = axConversation, c.state == .working || c.state == .thinking else { return }
             // 生成结束：给 MCP 的 notify 4 秒时间；没来就用兜底的完成提醒
             axFallbackTimer?.invalidate()
@@ -705,7 +710,8 @@ extension PetController {
             replyLengthForCaller(of: e) { [weak self] replyChars in
                 guard let self else { return }
                 let notifyChars = ((e.headline ?? "") + (e.points ?? []).joined()).count
-                if let n = replyChars, n < 20, notifyChars > n + 20 {
+                // 一个字都没写就来通知 → 一定是想用通知代替回复；写了但很短而通知更长 → 同样可疑
+                if let n = replyChars, n == 0 || (n < 20 && notifyChars > n + 20) {
                     Log.info("notify 被拒：topic=\(e.topic) 对话正文只有 \(n) 字，通知却有 \(notifyChars) 字")
                     respond(HTTPResponse(json: ["rejected": true, "replyChars": n]))
                     return
@@ -714,6 +720,18 @@ extension PetController {
                 let id = self.handleNotify(e)
                 respond(HTTPResponse(json: ["id": id, "state": self.conversation(id: id)?.state.label ?? "", "replyChars": replyChars ?? -1]))
             }
+            return
+        }
+        if req.method == "POST", req.path == "/answer" {
+            // 诊断：等同于在气泡里点选项 / 输入回答。{"topic": …, "text": …}
+            let obj = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            guard let text = obj["text"] as? String, !text.isEmpty else { respond(HTTPResponse(status: 400, json: ["error": "需要 text"])); return }
+            let c: Conversation?
+            if let t = obj["topic"] as? String, !t.isEmpty { c = conversations.first { $0.topic == t || $0.sidebarTitle == t } }
+            else { c = currentBubble ?? conversations.first { $0.state == .ask } }
+            guard let c else { respond(HTTPResponse(status: 404, json: ["error": "没有待回答的对话"])); return }
+            answer(c, text: text)
+            respond(HTTPResponse(json: ["ok": true, "topic": c.topic]))
             return
         }
         if req.method == "POST", req.path == "/send" {

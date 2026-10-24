@@ -410,7 +410,7 @@ final class ClaudeBridge {
     // MARK: 读取前台对话里 Claude 最后一条回复
 
     /// 前台对话里 Claude 最后一条回复的文字（按段落），用于 Claude 没调用 notify 时的兜底气泡。
-    /// 消息是 AXDocumentArticle，标题「Claude responded: …」；正文是其中的 AXStaticText。
+    /// 消息是 AXDocumentArticle，标题「Claude responded: …」（生成中的是 desc=Currently streaming message）；正文是其中的 AXStaticText。
     func readLastReply(completion: @escaping ([String]) -> Void) {
         axQueue.async { [weak self] in
             guard let self, self.isTrusted, let win = self.mainWindow() else { DispatchQueue.main.async { completion([]) }; return }
@@ -423,7 +423,10 @@ final class ClaudeBridge {
                     if self.role(h) == "AXHeading" { heading = self.str(h, kAXTitleAttribute); return true }
                     return false
                 }
+                // 写完的消息有「Claude responded: …」标题；正在生成的那条没有标题，desc 是「Currently streaming message」
+                let desc = (self.str(el, kAXDescriptionAttribute) ?? "").lowercased()
                 if let h = heading, h.hasPrefix("Claude responded") || h.hasPrefix("Claude 回复") { lastClaude = el }
+                else if desc.contains("streaming") { lastClaude = el }
                 return false
             }
             var lines: [String] = []
