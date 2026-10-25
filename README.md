@@ -1,14 +1,17 @@
-# 克劳德大小姐 · macOS 桌宠通知器
+# 克劳德大小姐 & GPT 龙娘 · macOS 桌宠通知器
 
 一只住在 macOS 桌面上的「克劳德大小姐」，替你盯着 **Claude 桌面版** 里的所有对话：
 有对话在生成时她敲小键盘；某条对话回复完成，她星星眼跳两下，头顶弹出漫画气泡，
 里面是这轮的结论和要点；Claude 需要你拿主意时，气泡里直接给选项或输入框，点一下就回答；
 点「打开对话」跳回 Claude 桌面版里那条对话。
 
+同一个 app 里还有第二只：**GPT 龙娘**，盯着 **Codex 桌面版 / Codex CLI**。两只各管各的工具，共用气泡、回答、面板和菜单。
+
 界面设计稿（可交互）：<https://claude.ai/artifact/TMKzSBHL3VZKzr6Lqp4GA9>
 
-> 角色形象与动画来自网友共创的开源项目 [Claude-girl](https://github.com/wangxianda941030/Claude-girl)
-> （美术素材 CC BY-NC 4.0：需署名，不可商用）。本项目不自带素材，第一次运行时由脚本下载并拆帧。
+> 大小姐的形象与动画来自网友共创的开源项目 [Claude-girl](https://github.com/wangxianda941030/Claude-girl)（CC BY-NC 4.0）；
+> 龙娘的形象来自 ZipZipPipe《大 AI 与小 AI 们》与 ApprenTice 的 Q 版设定，动画取自 [ai-pet-7in1](https://github.com/Houraiji9/ai-pet-7in1)（CC BY-NC-SA 4.0）。
+> 都是需署名、不可商用的同人素材，详见文末「致谢与许可」。仓库里带的是转好的透明 WebP 动图。
 
 ## 它由三部分组成
 
@@ -58,6 +61,24 @@ scripts/install-mcp.sh
 > 辅助功能权限跟签名绑定。跑一次 `scripts/make-signing-cert.sh` 生成本机自签名证书后，打包脚本会用它签名，授权一次即可；
 > 否则临时签名每次都变，重编译后要在 Accessibility 里删掉旧条目再加一次 `/Applications/ClaudeGirl.app`。
 
+## 接上 Codex（龙娘）
+
+```bash
+scripts/install-codex.sh
+```
+
+脚本做三件事：
+
+1. `~/.codex/config.toml` 里加一个 MCP 服务器 `codex-girl`（同一个 notify 工具，带 `PET_AGENT=codex`）和 CLI 用的 `notify` hook；
+2. `~/.codex/AGENTS.md` 追加一段「每轮结束调用 notify」的说明（Codex 的全局指令）；
+3. 把 `codex-pet/gpt-dragon/` 装到 `~/.codex/pets/`，这是 **Codex 原生桌宠包**：Codex → Settings → Appearance → Pets 里选「GPT 龙娘」，Codex 窗口里会多一只跟着任务状态动的小龙娘（原生宠只有动画，没有气泡）。
+
+装完 ⌘Q 重开 Codex。桌面上的龙娘不依赖以上任何一步：ClaudeGirl.app 会直接监听 `~/.codex/sessions/` 的会话日志，
+线程开始时她敲键盘，`task_complete` 时弹气泡（结论和要点从 Codex 最后一条回复里截取），出错时冒汗。
+MCP 的 notify 用来补充更好的摘要和「带选项的提问」；`notify` hook 只对 CLI 生效（桌面版不执行它）。
+
+「打开对话」走 `codex://threads/<thread-id>` 深链接，精确到线程。菜单栏里可以分别开关两只、以及是否监听 Codex 日志。
+
 ## 平时怎么用
 
 - **空闲**：原地喝茶、翻书，不会乱动；可以拖到任意位置。菜单里打开「允许到处走」后会一蹦一蹦地沿屏幕底边挪（原项目没有走路动画）。
@@ -101,12 +122,16 @@ scripts/install-mcp.sh
    - **聊天页里 Claude 不会主动调用 `notify`**（Claude Code 会读 MCP 服务器的说明，聊天页不会）：
      要把 `mcp/CLAUDE_PREFERENCES.md` 那段话贴进 Settings → Account → Instructions for Claude，且只对新开的对话生效。
 
+6. Codex 这边：app 每 2 秒读一次 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 新增的行，
+   `task_started` → 工作中，`task_complete`（带 `last_agent_message`）→ 完成气泡，`turn_aborted` → 空闲；线程 ID 用来拼 `codex://threads/<id>`。
+   龙娘的 notify 不过「正文关卡」（Codex 的回复在日志里，不需要防它把回复塞进通知）。
+
 本地接口（只监听 127.0.0.1，端口 47333）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 存活、版本、是否已授权辅助功能 |
-| POST | `/notify` | `{topic, headline, points[], question?, options[]?, needs_input?, kind?}` → `{id}` |
+| POST | `/notify` | `{agent?: claude\|codex, topic, headline, points[], question?, options[]?, needs_input?, kind?, chat_id?}` → `{id}` |
 | GET | `/wait?id=&timeout=` | 长轮询等回答 → `{answered, answer?}` |
 | POST | `/status` | `{topic?, state: working\|thinking\|idle}` 只改姿态 |
 | GET | `/debug` | 诊断：登记表里的会话、已知对话与绑定的 ID、前台对话 |
@@ -124,7 +149,8 @@ swift run            # 直接跑，自动找源码目录下的 Assets/clips
 ```
 
 - 动画帧目录：`Assets/clips/<片段代号>/001.png…`，也可用环境变量 `CLAUDEGIRL_ASSETS` 指定。
-- 姿态 ↔ 片段映射在 `ClipLibrary.swift` 的 `ClipName.candidates(for:)`，想换动作改那里。
+- 姿态 ↔ 片段映射在 `ClipLibrary.swift` 的 `ClipName.candidates(agent:pose:)`，想换动作改那里。
+- 龙娘动画：`Assets/clips-codex/*.webp`；原生桌宠包：`codex-pet/gpt-dragon/`（由 `scripts/build-codex-spritesheet.py` 从原始 webm 生成）。
 - 设计稿源文件在 `design/`（设计画布的画板）。
 
 ## 已知限制 / 排查
@@ -143,4 +169,8 @@ swift run            # 直接跑，自动找源码目录下的 Assets/clips
 
 - 角色「克劳德大小姐」及动画、表情包：[Claude-girl](https://github.com/wangxianda941030/Claude-girl)，由百度贴吧网友共创，
   美术素材 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)。使用时请署名「克劳德大小姐 · Claude-girl」并附仓库链接，不可商用。
+- 角色「GPT 龙娘」：原作 ZipZipPipe《[大 AI 与小 AI 们](https://www.bilibili.com/video/BV1tE9XBbErS/)》（[B 站](https://space.bilibili.com/4168597)），
+  Q 版设定 ApprenTice（[AI-Fanworks](https://github.com/Apprentice-Geo/AI-Fanworks/tree/main/ApprenTice/AI-Girls-and-Chibis)），
+  动画片段来自 [Houraiji9/ai-pet-7in1](https://github.com/Houraiji9/ai-pet-7in1)。
+  均为 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)：须署名、不可商用、衍生作品同协议。本仓库转出的 WebP 与 spritesheet 同样按 CC BY-NC-SA 4.0 分发。
 - 本仓库代码：MIT。

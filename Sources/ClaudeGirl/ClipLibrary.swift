@@ -9,8 +9,9 @@ struct Clip {
     let fps: Double
 }
 
-/// 片段代号（与原项目 Claude-girl 一致）
+/// 片段代号
 enum ClipName {
+    // 大小姐（与原项目 Claude-girl 一致）
     static let standby = "A01"       // 待机
     static let thinking = "A02"      // 托腮思考
     static let typing = "A03"        // 敲小键盘
@@ -24,39 +25,61 @@ enum ClipName {
     static let longThink = "D03"     // 超长思考
 
     /// 每个姿态可用的片段（按优先顺序；第一个存在的被使用，idle 随机）
-    static func candidates(for pose: Pose) -> [String] {
-        switch pose {
-        case .idle: return [tea, teaRest, book, standby]
-        case .walk: return [standby, tea]
-        case .working: return [typing, standby]
-        case .thinking: return [thinking, longThink, standby]
-        case .done: return [correct, wave, standby]
-        case .ask: return [palms, wave, standby]
-        case .error: return [sorry, standby]
+    static func candidates(agent: Agent, pose: Pose) -> [String] {
+        switch agent {
+        case .claude:
+            switch pose {
+            case .idle: return [tea, teaRest, book, standby]
+            case .walk: return [standby, tea]
+            case .working: return [typing, standby]
+            case .thinking: return [thinking, longThink, standby]
+            case .done: return [correct, wave, standby]
+            case .ask: return [palms, wave, standby]
+            case .error: return [sorry, standby]
+            }
+        case .codex:
+            // 龙娘（ai-pet-7in1 的片段，文件名见 scripts/prepare-codex-assets.sh）
+            switch pose {
+            case .idle: return ["idle", "look", "mutter", "tap", "shy"]
+            case .walk: return ["walk", "run", "idle"]
+            case .working: return ["working", "coding", "idle"]
+            case .thinking: return ["thinking", "mutter", "idle"]
+            case .done: return ["done", "jump", "wave", "idle"]
+            case .ask: return ["waiting", "wave", "look", "idle"]
+            case .error: return ["error", "idle"]
+            }
         }
     }
+
+    static func candidates(for pose: Pose) -> [String] { candidates(agent: .claude, pose: pose) }
 }
 
 /// 按需从磁盘加载帧，最多缓存 3 段
 final class ClipLibrary {
-    static let shared = ClipLibrary()
+    static let shared = ClipLibrary(agent: .claude)
+    static let codex = ClipLibrary(agent: .codex)
+    static func library(for agent: Agent) -> ClipLibrary { agent == .claude ? shared : codex }
 
+    let agent: Agent
     let fps: Double = 12
     private(set) var available: Set<String> = []
     private var cache: [String: Clip] = [:]
     private var lru: [String] = []
     private let queue = DispatchQueue(label: "claudegirl.clips", qos: .userInitiated)
 
-    init() {
+    init(agent: Agent) {
+        self.agent = agent
         rescan()
     }
+
+    private var directory: URL? { AssetLocator.clipsDirectory(for: agent) }
 
     /// 支持两种形态：<代号>/001.png… 帧目录，或 <代号>.webp / .gif / .png（动图单文件，ImageIO 解码）
     static let animatedExtensions: Set<String> = ["webp", "gif", "png", "apng", "heics"]
 
     func rescan() {
         available = []
-        guard let dir = AssetLocator.clipsDirectory,
+        guard let dir = directory,
               let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
         for u in items {
             if (try? u.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
@@ -69,7 +92,7 @@ final class ClipLibrary {
 
     /// 为姿态挑一个存在的片段；idle 在可用的几段里随机
     func clipName(for pose: Pose) -> String? {
-        let list = ClipName.candidates(for: pose).filter { available.contains($0) }
+        let list = ClipName.candidates(agent: agent, pose: pose).filter { available.contains($0) }
         guard !list.isEmpty else { return nil }
         if pose == .idle { return list.randomElement() }
         return list.first
@@ -93,7 +116,7 @@ final class ClipLibrary {
     }
 
     private func decode(_ name: String) -> Clip? {
-        guard let root = AssetLocator.clipsDirectory else { return nil }
+        guard let root = directory else { return nil }
         // 先找单文件动图（仓库自带、透明通道有保证），解不出来再退回帧目录
         for ext in ["webp", "gif", "apng", "png", "heics"] {
             let f = root.appendingPathComponent("\(name).\(ext)")

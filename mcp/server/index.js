@@ -8,6 +8,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const BASE = (process.env.CLAUDEGIRL_URL || "http://127.0.0.1:47333").replace(/\/$/, "");
+// 这个 MCP 服务器被哪只桌宠用：claude（默认）或 codex；由安装脚本通过环境变量设置
+const AGENT = (process.env.PET_AGENT || "claude").toLowerCase() === "codex" ? "codex" : "claude";
+const PET_NAME = AGENT === "codex" ? "GPT 龙娘" : "克劳德大小姐";
 // Claude 桌面版大约 60s 会掐断工具调用，所以最多等 48s
 const WAIT_SECONDS = Math.min(Math.max(Number(process.env.CLAUDEGIRL_WAIT || 48), 5), 55);
 
@@ -35,10 +38,10 @@ async function waitAnswer(id, seconds) {
 }
 
 const server = new McpServer(
-  { name: "claude-girl", version: "0.1.0" },
+  { name: AGENT === "codex" ? "codex-girl" : "claude-girl", version: "0.2.0" },
   {
     instructions:
-      "桌面上有一只叫「克劳德大小姐」的桌宠，替用户盯着所有对话。" +
+      `桌面上有一只叫「${PET_NAME}」的桌宠，替用户盯着所有对话。` +
       "先在对话里正常写完完整的回复，notify 只是最后附带的通知摘要，绝不能用 notify 代替回复正文。" +
       "回复写完后的最后一步调用 notify：topic 是这条对话的主题（几个字，前后保持一致），" +
       "headline 是一句话结论，points 最多三条要点。如果你需要用户做决定，填 question，能给选项就给 options（2–4 个）；" +
@@ -75,6 +78,7 @@ server.registerTool(
       options: args.options || undefined,
       needs_input: isQuestion && !(args.options && args.options.length > 0),
       kind: args.kind || (isQuestion ? "ask" : "done"),
+      agent: AGENT,
     };
 
     let res;
@@ -95,7 +99,7 @@ server.registerTool(
     }
 
     if (!isQuestion) {
-      return text("已通知大小姐。（这只是通知；如果完整回复还没写在对话里，请现在写出来。）");
+      return text(`已通知${PET_NAME}。（这只是通知；如果完整回复还没写在对话里，请现在写出来。）`);
     }
 
     try {

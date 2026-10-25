@@ -3,10 +3,12 @@ import QuartzCore
 
 /// 大小姐所在的透明窗口：动画、气泡、轻提示、拖拽、空闲时溜达
 final class PetWindowController: NSObject {
-    static let spriteSize = NSSize(width: 260, height: 180)
-    static let windowSize = NSSize(width: 860, height: 720)   // 高一点，装得下三条叠放的气泡
+    let agent: Agent
+    let spriteSize: NSSize
+    let windowSize: NSSize   // 高一点，装得下三条叠放的气泡
     /// 人物在窗口里的位置（窗口两侧各留一块放气泡）
-    static let spriteOrigin = NSPoint(x: 300, y: 0)
+    let spriteOrigin: NSPoint
+    private let library: ClipLibrary
 
     let window: PetWindow
     private let content = NSView()
@@ -37,11 +39,17 @@ final class PetWindowController: NSObject {
 
     var onSpriteClick: (() -> Void)?
 
-    override init() {
-        window = PetWindow(contentRect: NSRect(origin: .zero, size: PetWindowController.windowSize))
+    init(agent: Agent) {
+        self.agent = agent
+        library = ClipLibrary.library(for: agent)
+        spriteSize = agent.spriteSize
+        let side = BubbleView.width + 40
+        windowSize = NSSize(width: spriteSize.width + side * 2, height: max(720, spriteSize.height + 540))
+        spriteOrigin = NSPoint(x: side, y: 0)
+        window = PetWindow(contentRect: NSRect(origin: .zero, size: windowSize))
         super.init()
 
-        content.frame = NSRect(origin: .zero, size: PetWindowController.windowSize)
+        content.frame = NSRect(origin: .zero, size: windowSize)
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.clear.cgColor
         content.layer?.isOpaque = false
@@ -50,7 +58,7 @@ final class PetWindowController: NSObject {
         window.isOpaque = false
         window.backgroundColor = .clear
 
-        spriteHost.frame = NSRect(origin: PetWindowController.spriteOrigin, size: PetWindowController.spriteSize)
+        spriteHost.frame = NSRect(origin: spriteOrigin, size: spriteSize)
         spriteHost.wantsLayer = true
         spriteHost.layer?.backgroundColor = NSColor.clear.cgColor
         spriteHost.layer?.isOpaque = false
@@ -63,7 +71,7 @@ final class PetWindowController: NSObject {
         content.addSubview(spriteHost)
 
         placeAtHome()
-        if Settings.shared.showPet { window.orderFrontRegardless() }
+        if Settings.shared.showPet(agent) { window.orderFrontRegardless() }
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 
@@ -75,21 +83,24 @@ final class PetWindowController: NSObject {
 
     /// 人物左下角在屏幕上的坐标
     private var spriteScreenOrigin: NSPoint {
-        NSPoint(x: window.frame.minX + PetWindowController.spriteOrigin.x, y: window.frame.minY + PetWindowController.spriteOrigin.y)
+        NSPoint(x: window.frame.minX + spriteOrigin.x, y: window.frame.minY + spriteOrigin.y)
     }
 
     private func setSpriteScreenOrigin(_ p: NSPoint) {
-        window.setFrameOrigin(NSPoint(x: p.x - PetWindowController.spriteOrigin.x, y: p.y - PetWindowController.spriteOrigin.y))
+        window.setFrameOrigin(NSPoint(x: p.x - spriteOrigin.x, y: p.y - spriteOrigin.y))
     }
 
     private func placeAtHome() {
         let vis = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        if let saved = Settings.shared.homeOrigin,
-           NSScreen.screens.contains(where: { $0.visibleFrame.insetBy(dx: -200, dy: -200).contains(saved) }) {
+        if let saved = Settings.shared.homeOrigin(agent),
+           NSScreen.screens.contains(where: { $0.frame.insetBy(dx: -300, dy: -300).contains(saved) }) {
             setSpriteScreenOrigin(saved)
-        } else {
-            setSpriteScreenOrigin(NSPoint(x: vis.maxX - PetWindowController.spriteSize.width - 24, y: vis.minY + 2))
+            return
         }
+        // 默认：大小姐在右下角，龙娘站在她左边
+        var x = vis.maxX - Agent.claude.spriteSize.width - 24
+        if agent != .claude { x -= spriteSize.width + 40 }
+        setSpriteScreenOrigin(NSPoint(x: x, y: vis.minY + 2))
     }
 
     @objc private func screenChanged() {
@@ -101,14 +112,18 @@ final class PetWindowController: NSObject {
         let full = screen.frame
         let keep: CGFloat = 80
         var p = spriteScreenOrigin
-        p.x = min(max(p.x, full.minX - PetWindowController.spriteSize.width + keep), full.maxX - keep)
-        p.y = min(max(p.y, full.minY - PetWindowController.spriteSize.height + keep), full.maxY - keep)
+        p.x = min(max(p.x, full.minX - spriteSize.width + keep), full.maxX - keep)
+        p.y = min(max(p.y, full.minY - spriteSize.height + keep), full.maxY - keep)
         setSpriteScreenOrigin(p)
     }
 
+    /// 气泡尾巴伸进人物框多少 / 气泡底边离人物框底多高（按人物框尺寸等比）
+    private var bubbleOverlap: CGFloat { (spriteSize.width * 0.23).rounded() }
+    private var bubbleLift: CGFloat { (spriteSize.height * 0.55).rounded() }
+
     /// 气泡放左边还是右边：左边放不下就放右边
     private var bubbleFitsOnLeft: Bool {
-        spriteScreenOrigin.x + 60 - BubbleView.width >= screen.visibleFrame.minX
+        spriteScreenOrigin.x + bubbleOverlap - BubbleView.width >= screen.visibleFrame.minX
     }
 
     func setVisible(_ visible: Bool) {
@@ -131,18 +146,19 @@ final class PetWindowController: NSObject {
 
     /// 素材重新载入后刷新
     func refreshClip() {
+        library.rescan()
         playClip(for: walking ? .walk : pose)
     }
 
     private func playClip(for p: Pose, loop: Bool = true) {
         clipGeneration += 1
         let gen = clipGeneration
-        guard let name = ClipLibrary.shared.clipName(for: p) else {
+        guard let name = library.clipName(for: p) else {
             player.stop()
-            player.layer.contents = PetWindowController.placeholderImage()
+            player.layer.contents = placeholderImage()
             return
         }
-        ClipLibrary.shared.load(name) { [weak self] clip in
+        library.load(name) { [weak self] clip in
             guard let self, gen == self.clipGeneration, let clip else { return }
             self.player.play(clip, loop: loop)
         }
@@ -150,10 +166,11 @@ final class PetWindowController: NSObject {
 
     /// 点一下的小反应（被戳害羞），播完回到当前姿态
     private func playReaction() {
-        guard ClipLibrary.shared.available.contains("C06"), pose == .idle, !walking else { return }
+        let name = agent.reactionClip
+        guard library.available.contains(name), pose == .idle, !walking else { return }
         clipGeneration += 1
         let gen = clipGeneration
-        ClipLibrary.shared.load("C06") { [weak self] clip in
+        library.load(name) { [weak self] clip in
             guard let self, gen == self.clipGeneration, let clip else { return }
             self.player.onFinished = { [weak self] in
                 self?.player.onFinished = nil
@@ -163,16 +180,17 @@ final class PetWindowController: NSObject {
         }
     }
 
-    private static func placeholderImage() -> CGImage? {
-        let size = NSSize(width: 520, height: 360)
+    private func placeholderImage() -> CGImage? {
+        let size = NSSize(width: spriteSize.width * 2, height: spriteSize.height * 2)
+        let name = agent.shortName
         let img = NSImage(size: size, flipped: false) { rect in
             Palette.orange.withAlphaComponent(0.9).setFill()
-            NSBezierPath(roundedRect: NSRect(x: 180, y: 20, width: 160, height: 220), xRadius: 50, yRadius: 50).fill()
-            let text = "缺少动画素材\n请运行 scripts/prepare-assets.sh" as NSString
+            NSBezierPath(roundedRect: NSRect(x: rect.midX - 80, y: 20, width: 160, height: rect.height * 0.5), xRadius: 50, yRadius: 50).fill()
+            let text = "缺少\(name)动画素材\n请运行 scripts/prepare-assets.sh" as NSString
             let para = NSMutableParagraphStyle()
             para.alignment = .center
-            text.draw(in: NSRect(x: 60, y: 250, width: 400, height: 90), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 22, weight: .bold),
+            text.draw(in: NSRect(x: 10, y: rect.height * 0.5 + 30, width: rect.width - 20, height: 90), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 20, weight: .bold),
                 .foregroundColor: Palette.ink,
                 .paragraphStyle: para,
             ])
@@ -212,7 +230,7 @@ final class PetWindowController: NSObject {
         guard walkingAllowed else { return }
         let vis = screen.visibleFrame
         let minX = vis.minX + 8
-        let maxX = vis.maxX - PetWindowController.spriteSize.width - 8
+        let maxX = vis.maxX - spriteSize.width - 8
         guard maxX - minX > 200 else { scheduleIdleBehaviour(); return }
         let cur = spriteScreenOrigin.x
         var target = CGFloat.random(in: minX...maxX)
@@ -270,7 +288,7 @@ final class PetWindowController: NSObject {
         walking = false
         player.flipped = false
         if wasWalking { setSpriteScreenOrigin(NSPoint(x: spriteScreenOrigin.x, y: hopBaseY)) }
-        Settings.shared.homeOrigin = spriteScreenOrigin
+        Settings.shared.setHomeOrigin(agent, spriteScreenOrigin)
         if resumeIdle {
             if wasWalking { playClip(for: .idle) }
             scheduleIdleBehaviour()
@@ -302,7 +320,7 @@ final class PetWindowController: NSObject {
         dragging = false
         if dragMoved {
             clampToScreen()
-            Settings.shared.homeOrigin = spriteScreenOrigin
+            Settings.shared.setHomeOrigin(agent, spriteScreenOrigin)
             relayoutBubble()
             scheduleIdleBehaviour()
         } else {
@@ -355,14 +373,14 @@ final class PetWindowController: NSObject {
             b.onExpand = spec.onExpand
             content.addSubview(b)
             if bubblesOnLeft {
-                b.trailingAnchor.constraint(equalTo: spriteHost.leadingAnchor, constant: 60).isActive = true
+                b.trailingAnchor.constraint(equalTo: spriteHost.leadingAnchor, constant: bubbleOverlap).isActive = true
             } else {
-                b.leadingAnchor.constraint(equalTo: spriteHost.trailingAnchor, constant: -60).isActive = true
+                b.leadingAnchor.constraint(equalTo: spriteHost.trailingAnchor, constant: -bubbleOverlap).isActive = true
             }
             if let prev = previous {
                 b.bottomAnchor.constraint(equalTo: prev.topAnchor, constant: -8).isActive = true
             } else {
-                b.bottomAnchor.constraint(equalTo: spriteHost.bottomAnchor, constant: -100).isActive = true
+                b.bottomAnchor.constraint(equalTo: spriteHost.bottomAnchor, constant: -bubbleLift).isActive = true
             }
             if i > 0 { b.alphaValue = 0.96 }
             bubbles.append(b)
@@ -430,7 +448,7 @@ final class PetWindowController: NSObject {
         p.contentSize = vc.preferredContentSize
         popover = p
         window.makeKey()
-        p.show(relativeTo: spriteHost.bounds.insetBy(dx: 60, dy: 20), of: spriteHost, preferredEdge: .maxY)
+        p.show(relativeTo: spriteHost.bounds.insetBy(dx: spriteSize.width * 0.2, dy: 20), of: spriteHost, preferredEdge: .maxY)
     }
 
     func closePanel() {

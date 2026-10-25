@@ -27,3 +27,10 @@ NOT covered by this license. They come from
 https://github.com/wangxianda941030/Claude-girl and are licensed under
 CC BY-NC 4.0 (attribution required, non-commercial). This repository does not
 ship those assets; scripts/prepare-assets.sh downloads them at setup time.
+
+The character "GPT 龙娘" (GPT dragon girl) originates from ZipZipPipe's work
+《大 AI 与小 AI 们》 and ApprenTice's chibi designs; the animation clips come from
+https://github.com/Houraiji9/ai-pet-7in1. These are CC BY-NC-SA 4.0 (attribution,
+non-commercial, share-alike). The WebP animations under Assets/clips-codex/ and the
+spritesheet under codex-pet/ are derivatives distributed under the same license,
+not under MIT.

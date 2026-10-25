@@ -43,8 +43,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let header = NSMenuItem(title: list.isEmpty ? "还没有对话事件" : "对话 · \(list.count)", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-        for c in list.prefix(12) {
-            let mi = NSMenuItem(title: "\(c.topic)　\(c.state.label)", action: #selector(openConversation(_:)), keyEquivalent: "")
+        for c in list.prefix(14) {
+            let mi = NSMenuItem(title: "\(c.agent.shortName) · \(c.topic)　\(c.state.label)", action: #selector(openConversation(_:)), keyEquivalent: "")
             mi.target = self
             mi.representedObject = c.id
             mi.image = dotImage(Palette.dot(for: c.state))
@@ -53,15 +53,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let s = Settings.shared
-        menu.addItem(toggle("显示大小姐", on: s.showPet, action: #selector(toggleShow)))
+        menu.addItem(toggle("显示大小姐（Claude）", on: s.showPet(.claude), action: #selector(toggleShow)))
+        menu.addItem(toggle("显示龙娘（Codex）", on: s.showPet(.codex), action: #selector(toggleShowCodex)))
+        menu.addItem(toggle("监听 Codex 会话日志", on: s.watchCodex, action: #selector(toggleWatchCodex)))
         menu.addItem(toggle("安静模式（只记录不弹泡）", on: s.quietMode, action: #selector(toggleQuiet)))
         menu.addItem(toggle("允许到处走（蹦着挪）", on: s.allowWalking, action: #selector(toggleWalk)))
         menu.addItem(toggle("用 claude:// 链接跳转对话", on: s.useDeepLink, action: #selector(toggleDeepLink)))
         menu.addItem(.separator())
 
-        let test = NSMenuItem(title: "测试一下气泡", action: #selector(testBubble), keyEquivalent: "")
+        let test = NSMenuItem(title: "测试一下大小姐的气泡", action: #selector(testBubble), keyEquivalent: "")
         test.target = self
         menu.addItem(test)
+        let test2 = NSMenuItem(title: "测试一下龙娘的气泡", action: #selector(testBubbleCodex), keyEquivalent: "")
+        test2.target = self
+        menu.addItem(test2)
         let ax = NSMenuItem(title: controller.bridge.isTrusted ? "辅助功能权限：已授权" : "授权辅助功能（用于跳转对话、代填回答）…", action: #selector(requestAX), keyEquivalent: "")
         ax.target = self
         menu.addItem(ax)
@@ -101,7 +106,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
               let c = controller.conversations.first(where: { $0.id == id }) else { return }
         controller.openConversation(c)
     }
-    @objc private func toggleShow() { Settings.shared.showPet.toggle() }
+    @objc private func toggleShow() { Settings.shared.setShowPet(.claude, !Settings.shared.showPet(.claude)) }
+    @objc private func toggleShowCodex() { Settings.shared.setShowPet(.codex, !Settings.shared.showPet(.codex)) }
+    @objc private func toggleWatchCodex() { Settings.shared.watchCodex.toggle() }
+    @objc private func testBubbleCodex() { controller.injectTestEvent(agent: .codex) }
     @objc private func toggleQuiet() { Settings.shared.quietMode.toggle() }
     @objc private func toggleWalk() { Settings.shared.allowWalking.toggle() }
     @objc private func toggleDeepLink() { Settings.shared.useDeepLink.toggle() }

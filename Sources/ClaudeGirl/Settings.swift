@@ -13,10 +13,17 @@ final class Settings {
         NotificationCenter.default.post(name: .settingsChanged, object: nil)
     }
 
-    /// 显示大小姐
+    /// 显示某只桌宠
+    func showPet(_ agent: Agent) -> Bool {
+        bool(agent == .claude ? "showPet" : "showPet.\(agent.rawValue)", default: true)
+    }
+    func setShowPet(_ agent: Agent, _ on: Bool) {
+        set(on, agent == .claude ? "showPet" : "showPet.\(agent.rawValue)")
+    }
+    /// 兼容旧调用：大小姐
     var showPet: Bool {
-        get { bool("showPet", default: true) }
-        set { set(newValue, "showPet") }
+        get { showPet(.claude) }
+        set { setShowPet(.claude, newValue) }
     }
     /// 安静模式：只记录到面板，不弹气泡、不跳
     var quietMode: Bool {
@@ -28,12 +35,12 @@ final class Settings {
         get { bool("allowWalking", default: false) }
         set { set(newValue, "allowWalking") }
     }
-    /// 用 claude://claude.ai/chat/<uuid> 链接跳转（已验证桌面版支持，默认开）
+    /// 用深链接（claude:// / codex://）跳转对话
     var useDeepLink: Bool {
         get { bool("useDeepLink", default: true) }
         set { set(newValue, "useDeepLink") }
     }
-    /// 「标题 → 对话 UUID」登记表
+    /// 「标题 → 对话 ID」登记表（Claude）
     var chatRegistry: [String: String] {
         get { d.dictionary(forKey: "chatRegistry") as? [String: String] ?? [:] }
         set { d.set(newValue, forKey: "chatRegistry") }
@@ -43,16 +50,29 @@ final class Settings {
         let v = d.integer(forKey: "port")
         return v > 0 && v < 65536 ? UInt16(v) : 47333
     }
-    /// 上次放下大小姐的位置（窗口左下角，屏幕坐标）
-    var homeOrigin: CGPoint? {
-        get {
-            guard let arr = d.array(forKey: "homeOrigin") as? [Double], arr.count == 2 else { return nil }
-            return CGPoint(x: arr[0], y: arr[1])
-        }
-        set {
-            if let p = newValue { d.set([p.x, p.y], forKey: "homeOrigin") } else { d.removeObject(forKey: "homeOrigin") }
-        }
+    /// 上次放下某只桌宠的位置（人物框左下角，屏幕坐标）
+    func homeOrigin(_ agent: Agent) -> CGPoint? {
+        let key = agent == .claude ? "homeOrigin" : "homeOrigin.\(agent.rawValue)"
+        guard let arr = d.array(forKey: key) as? [Double], arr.count == 2 else { return nil }
+        return CGPoint(x: arr[0], y: arr[1])
+    }
+    func setHomeOrigin(_ agent: Agent, _ p: CGPoint?) {
+        let key = agent == .claude ? "homeOrigin" : "homeOrigin.\(agent.rawValue)"
+        if let p { d.set([p.x, p.y], forKey: key) } else { d.removeObject(forKey: key) }
     }
     /// 完成气泡停留秒数
     var doneBubbleSeconds: TimeInterval { 20 }
+
+    /// Codex 的主目录（$CODEX_HOME 或 ~/.codex）
+    var codexHome: URL {
+        if let env = ProcessInfo.processInfo.environment["CODEX_HOME"], !env.isEmpty {
+            return URL(fileURLWithPath: env)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    }
+    /// 是否监听 Codex 会话日志
+    var watchCodex: Bool {
+        get { bool("watchCodex", default: true) }
+        set { set(newValue, "watchCodex") }
+    }
 }

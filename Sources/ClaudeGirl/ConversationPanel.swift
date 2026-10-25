@@ -123,7 +123,7 @@ final class PanelRow: NSView {
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         snip.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let chip = ChipView(text: c.state.label, state: c.state, maxWidth: 100)
+        let chip = ChipView(text: "\(c.agent.shortName)·\(c.state.label)", state: c.state, maxWidth: 120)
         let time = NSTextField(labelWithString: relativeTime(c.updatedAt))
         time.font = Fonts.semibold(12)
         time.textColor = Palette.muted

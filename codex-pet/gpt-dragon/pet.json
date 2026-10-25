@@ -1,0 +1,6 @@
+{
+  "id": "gpt-dragon",
+  "displayName": "GPT 龙娘",
+  "description": "白紫配色的 GPT 龙娘。形象来自 ZipZipPipe《大 AI 与小 AI 们》与 ApprenTice 的 Q 版设定，动画取自 Houraiji9/ai-pet-7in1（CC BY-NC-SA 4.0，非商用）。",
+  "spritesheetPath": "spritesheet.webp"
+}

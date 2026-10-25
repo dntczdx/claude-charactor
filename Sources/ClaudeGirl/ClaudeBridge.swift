@@ -13,7 +13,13 @@ struct ChatRef {
 /// - 把回答填进输入框并发送
 /// - 轮询「停止生成」按钮，判断当前对话是否在生成
 final class ClaudeBridge {
-    static let bundleIDs = ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
+    /// 这座桥接的是哪个桌面 app（Claude / Codex）
+    let agent: Agent
+    var bundleIDs: [String] { agent.bundleIDs }
+
+    init(agent: Agent = .claude) {
+        self.agent = agent
+    }
 
     private let axQueue = DispatchQueue(label: "claudegirl.ax", qos: .utility)
     private var pollTimer: DispatchSourceTimer?
@@ -32,10 +38,20 @@ final class ClaudeBridge {
     }
 
     var runningApp: NSRunningApplication? {
-        for id in Self.bundleIDs {
+        for id in bundleIDs {
             if let a = NSRunningApplication.runningApplications(withBundleIdentifier: id).first { return a }
         }
-        return nil
+        // bundle id 不认识时按名字兜底（Codex 桌面版的 id 未必是猜的那个）
+        return NSWorkspace.shared.runningApplications.first { $0.localizedName == agent.appName && $0.activationPolicy == .regular }
+    }
+
+    /// 应用在磁盘上的位置（没在运行时用来启动）
+    private var appURL: URL? {
+        for id in bundleIDs {
+            if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return u }
+        }
+        let guess = URL(fileURLWithPath: "/Applications/\(agent.appName).app")
+        return FileManager.default.fileExists(atPath: guess.path) ? guess : nil
     }
 
     /// 最近一次轮询看到的前台对话标题 / UUID
@@ -50,13 +66,11 @@ final class ClaudeBridge {
             completion(true)
             return
         }
-        for id in Self.bundleIDs {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
-                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, err in
-                    DispatchQueue.main.async { completion(err == nil) }
-                }
-                return
+        if let url = appURL {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, err in
+                DispatchQueue.main.async { completion(err == nil) }
             }
+            return
         }
         completion(false)
     }
@@ -70,11 +84,13 @@ final class ClaudeBridge {
             let titles = chat.titles.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             // 有 UUID 就直接用 claude:// 链接跳，不需要辅助功能权限
             var usedDeepLink = false
-            if let id = chat.id, Settings.shared.useDeepLink, let url = Self.deepLink(for: id) {
+            if let id = chat.id, Settings.shared.useDeepLink, let url = self.deepLink(for: id) {
                 NSWorkspace.shared.open(url)
                 usedDeepLink = true
                 Log.info("跳转 \(url.absoluteString) 已发出")
             }
+            // Codex：codex://threads/<id> 本身就是精确跳转，不读界面核对
+            if self.agent == .codex { completion(usedDeepLink); return }
             guard self.isTrusted, chat.id != nil || !titles.isEmpty else {
                 // 没法核对：有深链接就当发出去了；什么都没有就只是激活了窗口，算失败
                 completion(ok && usedDeepLink)
@@ -137,6 +153,7 @@ final class ClaudeBridge {
     /// 每 1.5s 看一眼：是否在生成、前台对话标题与 ID；每 3s 扫一次侧栏，把所有对话行（标题、ID、状态前缀）交给 onSidebar
     func startObserving(onChange: @escaping (_ generating: Bool, _ title: String?, _ chatID: String?) -> Void,
                         onSidebar: @escaping ([SidebarRow]) -> Void) {
+        guard agent == .claude else { return }
         let t = DispatchSource.makeTimerSource(queue: axQueue)
         t.schedule(deadline: .now() + 2, repeating: 1.5)
         t.setEventHandler { [weak self] in
@@ -321,6 +338,14 @@ final class ClaudeBridge {
 
     static func deepLink(for id: String) -> URL? {
         URL(string: "claude://claude.ai/" + normalizeID(id))
+    }
+
+    /// 按 app 拼深链接：Claude 是 claude://claude.ai/<chat|epitaxy|cowork>/…，Codex 是 codex://threads/<uuid>
+    func deepLink(for id: String) -> URL? {
+        switch agent {
+        case .claude: return Self.deepLink(for: id)
+        case .codex: return agent.deepLink(chatID: id)
+        }
     }
 
     // MARK: 读取：标题 / 当前 UUID / 侧栏链接
@@ -532,7 +557,7 @@ final class ClaudeBridge {
         if id == nil, let cur = curTitle, titles.contains(where: { Self.similarity($0, cur) >= 0.8 }) { return true }
 
         // 2. claude:// 链接（open(chat:) 里没发过才发）
-        if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = Self.deepLink(for: id) {
+        if let id, !deepLinkTried, Settings.shared.useDeepLink, let url = deepLink(for: id) {
             DispatchQueue.main.sync { _ = NSWorkspace.shared.open(url) }
             Thread.sleep(forTimeInterval: 1.4)
             if let w = mainWindow(), currentChatID(window: w) == id {

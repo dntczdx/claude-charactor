@@ -22,6 +22,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ClaudeGirl"
 cp -R Assets/clips "$APP/Contents/Resources/clips"
+[ -d Assets/clips-codex ] && cp -R Assets/clips-codex "$APP/Contents/Resources/clips-codex"
 [ -f Assets/AppIcon.icns ] && cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'

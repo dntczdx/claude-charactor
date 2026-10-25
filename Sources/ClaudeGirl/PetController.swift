@@ -2,12 +2,21 @@ import AppKit
 
 /// 状态中枢：对话状态表、姿态、气泡队列、事件服务器、与 Claude 桌面版的桥接
 final class PetController: NSObject {
-    static let version = "0.1.0"
+    static let version = "0.2.0"
 
     private(set) var conversations: [Conversation] = []   // 最近活动在前
-    let bridge = ClaudeBridge()
+    /// 大小姐 ↔ Claude 桌面版
+    let bridge = ClaudeBridge(agent: .claude)
+    /// 龙娘 ↔ Codex 桌面版
+    let codexBridge = ClaudeBridge(agent: .codex)
 
     private var windowController: PetWindowController!
+    private var codexWindow: PetWindowController!
+    private var codexWatcher: CodexWatcher?
+    private var codexSignature = ""
+
+    private func window(for agent: Agent) -> PetWindowController { agent == .claude ? windowController : codexWindow }
+    private func bridgeFor(_ agent: Agent) -> ClaudeBridge { agent == .claude ? bridge : codexBridge }
     private var statusItem: StatusItemController!
     private var panel: ConversationPanel!
     private var server: EventServer?
@@ -32,8 +41,10 @@ final class PetController: NSObject {
     // MARK: 生命周期
 
     func start() {
-        windowController = PetWindowController()
+        windowController = PetWindowController(agent: .claude)
         windowController.onSpriteClick = { [weak self] in self?.togglePanel() }
+        codexWindow = PetWindowController(agent: .codex)
+        codexWindow.onSpriteClick = { [weak self] in self?.togglePanel(.codex) }
 
         panel = ConversationPanel()
         panel.conversations = { [weak self] in self?.conversations ?? [] }
@@ -52,6 +63,7 @@ final class PetController: NSObject {
         })
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
         startRegistryPolling()
+        startCodexWatcher()
 
         if !bridge.isTrusted {
             // 第一次启动顺手要一下权限；拒绝也不影响看通知
@@ -64,6 +76,17 @@ final class PetController: NSObject {
         server?.stop()
         bridge.stopObserving()
         registryTimer?.invalidate()
+        codexWatcher?.stop()
+    }
+
+    private func startCodexWatcher() {
+        guard Settings.shared.watchCodex, codexWatcher == nil else { return }
+        let w = CodexWatcher()
+        w.onTurnStarted = { [weak self] t in self?.codexTurnStarted(t) }
+        w.onTurnComplete = { [weak self] t, last, err in self?.codexTurnComplete(t, lastMessage: last, error: err) }
+        w.onTurnAborted = { [weak self] t in self?.codexTurnAborted(t) }
+        w.start()
+        codexWatcher = w
     }
 
     private func startServer() {
@@ -81,8 +104,11 @@ final class PetController: NSObject {
     }
 
     @objc private func settingsChanged() {
-        windowController.setVisible(Settings.shared.showPet)
+        windowController.setVisible(Settings.shared.showPet(.claude))
         windowController.walkingSettingChanged()
+        codexWindow.setVisible(Settings.shared.showPet(.codex))
+        codexWindow.walkingSettingChanged()
+        if Settings.shared.watchCodex { startCodexWatcher() } else { codexWatcher?.stop(); codexWatcher = nil }
         recompute()
     }
 
@@ -105,7 +131,7 @@ final class PetController: NSObject {
             let obj = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             let c: Conversation
             if let id = obj["id"] as? String, !id.isEmpty {
-                c = conversations.first { $0.chatID == id } ?? { let n = Conversation(topic: (obj["topic"] as? String) ?? id); n.chatID = id; return n }()
+                c = conversations.first { $0.chatID == id } ?? { let n = Conversation(topic: (obj["topic"] as? String) ?? id, agent: .claude); n.chatID = id; return n }()
             } else if let t = obj["topic"] as? String, !t.isEmpty {
                 c = conversation(forTopic: t)
             } else {
@@ -133,6 +159,7 @@ final class PetController: NSObject {
     /// 处理 notify，返回请求 id
     @discardableResult
     func handleNotify(_ e: NotifyEvent) -> String {
+        if e.resolvedAgent == .codex { return handleCodexNotify(e) }
         let id = UUID().uuidString
         let c = conversation(forTopic: e.topic)
         c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -192,6 +219,100 @@ final class PetController: NSObject {
         return id
     }
 
+    // MARK: Codex（龙娘）：MCP notify / notify hook / 会话日志
+
+    /// 龙娘的 notify：来自 Codex 的 MCP 工具或 CLI 的 notify hook（后者带 thread-id）
+    private func handleCodexNotify(_ e: NotifyEvent) -> String {
+        let id = UUID().uuidString
+        let c = conversation(forTopic: e.topic, agent: .codex, chatID: e.chatID)
+        if c.chatID == nil || c.chatID == e.chatID {
+            c.topic = e.topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // 日志刚刚已经把同一线程报成完成、而且用户已经看过：再来一条同类通知只更新内容，不重复弹
+        let dup = c.state == .done && !c.unread && Date().timeIntervalSince(c.updatedAt) < 15 && e.resolvedState == .done
+        c.apply(e, requestId: id)
+        c.isTest = e.test == true
+        if dup { c.unread = false }
+        if c.chatID == nil, e.test != true { bindCodexNotify(c) }
+        // 同一线程只留这一条
+        if let cid = c.chatID {
+            conversations.removeAll { $0 !== c && $0.agent == .codex && $0.chatID == cid }
+        }
+        Log.info("notify[codex] topic=\(c.topic) state=\(c.state.label) options=\(c.options.count) id=\(id.prefix(8)) chat=\(c.chatID.map { String($0.prefix(8)) } ?? "-")")
+        bump(c)
+        recompute()
+        return id
+    }
+
+    /// MCP 的 notify 不知道自己在哪条线程；日志里正在工作的那条多半就是它
+    private func bindCodexNotify(_ c: Conversation) {
+        let busy = conversations.filter { $0.agent == .codex && $0 !== c && ($0.state == .working || $0.state == .thinking) && $0.chatID != nil }
+        let recent = conversations.filter { $0.agent == .codex && $0 !== c && $0.chatID != nil && Date().timeIntervalSince($0.updatedAt) < 20 }
+        guard let src = busy.first ?? recent.first else { return }
+        c.chatID = src.chatID
+        if c.sidebarTitle == nil { c.sidebarTitle = src.topic }
+        if src.requestId == nil { conversations.removeAll { $0 === src } }
+    }
+
+    private func codexConversation(_ t: CodexWatcher.ThreadInfo) -> Conversation {
+        if let c = conversations.first(where: { $0.agent == .codex && $0.chatID == t.id }) { return c }
+        let c = conversation(forTopic: t.title, agent: .codex, chatID: t.id)
+        c.chatID = t.id
+        return c
+    }
+
+    private func codexTurnStarted(_ t: CodexWatcher.ThreadInfo) {
+        let c = codexConversation(t)
+        if c.topic.isEmpty || c.topic == "Codex 线程" { c.topic = t.title }
+        let justNotified = c.requestId != nil && c.state.showsBubble && Date().timeIntervalSince(c.updatedAt) < 90
+        guard !justNotified else { return }
+        c.state = .working
+        c.updatedAt = Date()
+        Log.info("codex 开始 thread=\(t.id.prefix(8)) \(c.topic)")
+        bump(c)
+        recompute()
+    }
+
+    private func codexTurnComplete(_ t: CodexWatcher.ThreadInfo, lastMessage: String?, error: String?) {
+        let c = codexConversation(t)
+        if c.topic.isEmpty || c.topic == "Codex 线程" { c.topic = t.title }
+        // MCP notify 刚刚已经把这条报成完成/提问了：不要用日志的粗摘要覆盖
+        if c.requestId != nil, c.state.showsBubble, Date().timeIntervalSince(c.updatedAt) < 20 {
+            Log.info("codex 完成 thread=\(t.id.prefix(8))（已由 notify 报过，跳过）")
+            return
+        }
+        if let error, !error.isEmpty {
+            c.state = .error
+            c.headline = String(error.prefix(80))
+            c.points = []
+        } else {
+            let sum = CodexSummary.make(from: lastMessage)
+            c.state = .done
+            c.headline = sum.headline
+            c.points = sum.points
+        }
+        c.question = nil
+        c.options = []
+        c.needsInput = false
+        c.requestId = nil
+        c.answer = nil
+        c.updatedAt = Date()
+        c.unread = true
+        Log.info("codex 完成 thread=\(t.id.prefix(8)) \(c.state.label)：\(c.headline)")
+        bump(c)
+        recompute()
+    }
+
+    private func codexTurnAborted(_ t: CodexWatcher.ThreadInfo) {
+        let c = codexConversation(t)
+        if c.state == .working || c.state == .thinking {
+            c.state = .idle
+            c.updatedAt = Date()
+            bump(c)
+            recompute()
+        }
+    }
+
     /// notify 通常是前台正在生成的那条对话发来的（工具调用发生在回复过程中），
     /// 把 Claude 自己起的 topic 和窗口标题（= 侧栏标题）对上，跳转时就能找到它。
     private func linkToForegroundConversation(_ c: Conversation) {
@@ -218,7 +339,7 @@ final class PetController: NSObject {
     }
 
     func handleStatus(_ e: StatusEvent) {
-        let c = conversation(forTopic: e.topic ?? "当前对话")
+        let c = conversation(forTopic: e.topic ?? "当前对话", agent: Agent(name: e.agent))
         let s = ConvState(kind: e.state)
         if s == .idle || s == .working || s == .thinking {
             c.state = s
@@ -255,7 +376,7 @@ final class PetController: NSObject {
         c.unread = false
         if pinnedBubble === c { pinnedBubble = nil }
         hideTimers.removeValue(forKey: ObjectIdentifier(c))?.invalidate()
-        windowController.markBubbleAnswered(c, text: text)
+        window(for: c.agent).markBubbleAnswered(c, text: text)
         // 留 3 秒给「✓ 已回复」，然后从气泡堆里撤掉
         lingering[ObjectIdentifier(c)] = c
         let t = Timer(timeInterval: 3, repeats: false) { [weak self, weak c] _ in
@@ -283,22 +404,22 @@ final class PetController: NSObject {
             c.state = .idle
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-            windowController.showWhisper(c.isTest ? "这是演示气泡，回答没有发出" : "不知道这条属于哪个对话，答案已复制到剪贴板")
+            window(for: c.agent).showWhisper(c.isTest ? "这是演示气泡，回答没有发出" : "不知道这条属于哪个对话，答案已复制到剪贴板")
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.recompute() }
         } else {
             // 走辅助功能：切到那条对话，把答案填进输入框发出去（切不到就不发）
             Log.info("answer 「\(text)」→ 走辅助功能填进对话 id=\(c.chatID ?? "-") titles=\(c.titlesForLookup)")
             c.state = .working
-            bridge.deliver(text, chat: c.chatRef) { [weak self] ok in
+            bridgeFor(c.agent).deliver(text, chat: c.chatRef) { [weak self] ok in
                 guard let self else { return }
                 Log.info("deliver 结果 ok=\(ok)")
                 if !ok {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     c.state = .idle
-                    self.windowController.showWhisper("没能自动填进对话，答案已复制到剪贴板")
+                    self.window(for: c.agent).showWhisper("没能自动填进对话，答案已复制到剪贴板")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.recompute() }
-                    self.bridge.open(chat: c.chatRef) { _ in }
+                    self.bridgeFor(c.agent).open(chat: c.chatRef) { _ in }
                 }
                 self.recompute()
             }
@@ -307,16 +428,16 @@ final class PetController: NSObject {
         bump(c)
         NotificationCenter.default.post(name: .conversationsChanged, object: nil)
         statusItem.refresh()
-        windowController.setPose(topPose())
+        window(for: c.agent).setPose(topPose(for: c.agent))
     }
 
     func openConversation(_ c: Conversation) {
         // 跳过去看，气泡留着（等「知道了」或自动收起），回来还能继续在气泡里回一句
-        if c.chatID == nil { c.chatID = lookupChatID(for: c) }
-        Log.info("open id=\(c.chatID.map(Self.shortID) ?? "-") titles=\(c.titlesForLookup)")
-        bridge.open(chat: c.chatRef) { [weak self] ok in
+        if c.agent == .claude, c.chatID == nil { c.chatID = lookupChatID(for: c) }
+        Log.info("open[\(c.agent.rawValue)] id=\(c.chatID.map(Self.shortID) ?? "-") titles=\(c.titlesForLookup)")
+        bridgeFor(c.agent).open(chat: c.chatRef) { [weak self] ok in
             Log.info("open 结果 ok=\(ok)")
-            if !ok { self?.windowController.showWhisper("没在侧栏找到这条对话，只打开了 Claude") }
+            if !ok { self?.window(for: c.agent).showWhisper("没找到这条对话，只打开了 \(c.agent.appName)") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recompute() }
         }
         recompute()
@@ -345,27 +466,30 @@ final class PetController: NSObject {
         recompute(force: true)
     }
 
-    func togglePanel() {
-        windowController.togglePanel(panel)
+    func togglePanel(_ agent: Agent = .claude) {
+        window(for: agent).togglePanel(panel)
     }
 
     func reloadAssets() {
-        ClipLibrary.shared.rescan()
         windowController.refreshClip()
+        codexWindow.refreshClip()
     }
 
-    /// 菜单里的「测试一下气泡」：轮流演示完成 / 提问
+    /// 菜单里的「测试一下气泡」：轮流演示完成 / 提问（演示通知不绑定真实对话）
     private var testToggle = false
-    func injectTestEvent() {
+    func injectTestEvent(agent: Agent = .claude) {
         testToggle.toggle()
         let e: NotifyEvent
         if testToggle {
-            e = NotifyEvent(topic: "博客列表分页方案", headline: "两种我都能做：无限滚动体验顺，页码方便收藏和 SEO。", summary: nil, points: nil,
-                            question: "列表页用哪种分页？", options: ["页码分页（推荐）", "无限滚动", "两种都做，加个开关"], needsInput: nil, kind: "ask")
+            e = NotifyEvent(topic: agent == .codex ? "分页接口改造" : "博客列表分页方案",
+                            headline: "两种我都能做：无限滚动体验顺，页码方便收藏和 SEO。",
+                            question: "列表页用哪种分页？", options: ["页码分页（推荐）", "无限滚动", "两种都做，加个开关"],
+                            kind: "ask", agent: agent.rawValue, test: true)
         } else {
-            e = NotifyEvent(topic: "登录页表单校验", headline: "登录页校验改好了，3 个测试全过", summary: nil,
+            e = NotifyEvent(topic: agent == .codex ? "登录页单测补齐" : "登录页表单校验",
+                            headline: "登录页校验改好了，3 个测试全过",
                             points: ["邮箱、密码改成提交时统一校验，提示跟在字段下", "校验规则抽到 validators.ts，登录注册共用", "补了 3 个单元测试"],
-                            question: nil, options: nil, needsInput: nil, kind: "done")
+                            kind: "done", agent: agent.rawValue, test: true)
         }
         handleNotify(e)
     }
@@ -636,17 +760,20 @@ final class PetController: NSObject {
         s.lowercased().filter { !$0.isWhitespace && !$0.isPunctuation }
     }
 
-    /// 按主题找对话：完全一致，或一方包含另一方（Claude 自己起的主题和侧栏标题常常只差几个字）
-    private func conversation(forTopic topic: String) -> Conversation {
+    /// 按主题找对话（同一只桌宠范围内）：先按 ID，再完全一致，或一方包含另一方
+    private func conversation(forTopic topic: String, agent: Agent = .claude, chatID: String? = nil) -> Conversation {
+        if let chatID, !chatID.isEmpty, let c = conversations.first(where: { $0.agent == agent && $0.chatID == chatID }) { return c }
         let t = Self.normalize(topic)
         func names(_ c: Conversation) -> [String] { [c.topic, c.sidebarTitle].compactMap { $0 }.map(Self.normalize) }
-        if let c = conversations.first(where: { names($0).contains(t) }) { return c }
-        if t.count >= 4, let c = conversations.first(where: {
+        let same = conversations.filter { $0.agent == agent }
+        if let c = same.first(where: { names($0).contains(t) }) { return c }
+        if t.count >= 4, let c = same.first(where: {
             names($0).contains { n in n.count >= 4 && (n.contains(t) || t.contains(n)) }
         }) { return c }
-        let c = Conversation(topic: topic)
+        let c = Conversation(topic: topic, agent: agent)
+        c.chatID = chatID
         conversations.insert(c, at: 0)
-        if conversations.count > 30 { conversations.removeLast() }
+        if conversations.count > 40 { conversations.removeLast() }
         return c
     }
 
@@ -656,32 +783,33 @@ final class PetController: NSObject {
         NotificationCenter.default.post(name: .conversationsChanged, object: nil)
     }
 
-    /// 所有对话里优先级最高的姿态
-    private func topPose() -> Pose {
+    /// 某只桌宠：它的对话里优先级最高的姿态
+    private func topPose(for agent: Agent = .claude) -> Pose {
         let active = conversations.filter {
-            $0.state == .working || $0.state == .thinking || ($0.state.showsBubble && $0.unread)
+            $0.agent == agent && ($0.state == .working || $0.state == .thinking || ($0.state.showsBubble && $0.unread))
         }
         return (active.map(\.state).max() ?? .idle).pose
     }
 
-    /// 重新决定姿态、气泡堆、轻提示
+    /// 重新决定姿态、气泡堆、轻提示（大小姐这一套走原逻辑，龙娘走 recomputeCodex）
     func recompute(force: Bool = false) {
-        windowController.setPose(topPose())
+        recomputeCodex(force: force)
+        windowController.setPose(topPose(for: .claude))
 
         let quiet = Settings.shared.quietMode
         var list = conversations
-            .filter { $0.unread && $0.state.showsBubble && !quiet }
+            .filter { $0.agent == .claude && $0.unread && $0.state.showsBubble && !quiet }
             .sorted { a, b in
                 if a.state != b.state { return a.state > b.state }
                 return a.updatedAt > b.updatedAt
             }
         // 面板里点选的那条放最下面展开
-        if let p = pinnedBubble {
+        if let p = pinnedBubble, p.agent == .claude {
             list.removeAll { $0 === p }
             list.insert(p, at: 0)
         }
         // 刚回答完的留 3 秒
-        for (_, c) in lingering where !list.contains(where: { $0 === c }) { list.insert(c, at: 0) }
+        for (_, c) in lingering where c.agent == .claude && !list.contains(where: { $0 === c }) { list.insert(c, at: 0) }
         let overflow = max(0, list.count - 3)
         let show = Array(list.prefix(3))
         let sig = show.map { c -> String in
@@ -703,7 +831,7 @@ final class PetController: NSObject {
             }
         }
 
-        if let busy = conversations.first(where: { $0.state == .working || $0.state == .thinking }) {
+        if let busy = conversations.first(where: { $0.agent == .claude && ($0.state == .working || $0.state == .thinking) }) {
             windowController.showWhisper("\(busy.topic) · \(busy.state == .thinking ? "想一想…" : "正在写…")")
         } else if overflow > 0 {
             windowController.showWhisper("还有 \(overflow) 条通知，点我看面板")
@@ -711,6 +839,49 @@ final class PetController: NSObject {
             windowController.showWhisper(nil)
         }
         statusItem.refresh()
+    }
+
+    /// 龙娘：同样最多叠三条，最新的展开；面板点选、刚回答完的也照顾到
+    private func recomputeCodex(force: Bool) {
+        guard let w = codexWindow else { return }
+        w.setPose(topPose(for: .codex))
+        let quiet = Settings.shared.quietMode
+        var list = conversations
+            .filter { $0.agent == .codex && $0.unread && $0.state.showsBubble && !quiet }
+            .sorted { a, b in
+                if a.state != b.state { return a.state > b.state }
+                return a.updatedAt > b.updatedAt
+            }
+        if let p = pinnedBubble, p.agent == .codex {
+            list.removeAll { $0 === p }
+            list.insert(p, at: 0)
+        }
+        for (_, c) in lingering where c.agent == .codex && !list.contains(where: { $0 === c }) { list.insert(c, at: 0) }
+        let overflow = max(0, list.count - 3)
+        let show = Array(list.prefix(3))
+        let sig = show.map { c -> String in
+            let answered = lingering[ObjectIdentifier(c)] != nil ? "a" : ""
+            return "\(ObjectIdentifier(c).hashValue):\(c.state.rawValue):\(c.points.count):\(c.headline.hashValue)\(answered)"
+        }.joined(separator: "|")
+        if sig != codexSignature || force {
+            if !force, !show.isEmpty, w.bubbleBusy {
+                Log.info("龙娘气泡忙（输入/悬停中），暂不更新气泡堆")
+            } else {
+                codexSignature = sig
+                w.setBubbles(show.enumerated().map { i, c in bubbleSpec(c, expanded: i == 0) })
+                for c in show {
+                    if let a = lingering[ObjectIdentifier(c)]?.answer { w.markBubbleAnswered(c, text: a) }
+                    else if c.state == .done { scheduleHide(c) }
+                }
+            }
+        }
+        if let busy = conversations.first(where: { $0.agent == .codex && ($0.state == .working || $0.state == .thinking) }) {
+            w.showWhisper("\(busy.topic) · \(busy.state == .thinking ? "想一想…" : "正在写…")")
+        } else if overflow > 0 {
+            w.showWhisper("还有 \(overflow) 条通知，点我看面板")
+        } else {
+            w.showWhisper(nil)
+        }
     }
 
     private func bubbleSpec(_ c: Conversation, expanded: Bool) -> PetWindowController.BubbleSpec {
@@ -729,7 +900,7 @@ final class PetController: NSObject {
         hideTimers[key]?.invalidate()
         let t = Timer(timeInterval: s ?? Settings.shared.doneBubbleSeconds, repeats: false) { [weak self, weak c] _ in
             guard let self, let c else { return }
-            if self.windowController.bubbleBusy {
+            if self.window(for: c.agent).bubbleBusy {
                 self.scheduleHide(c, after: 6)
                 return
             }
@@ -765,9 +936,9 @@ extension PetController {
             guard let e = req.json(NotifyEvent.self), !e.topic.trimmingCharacters(in: .whitespaces).isEmpty else {
                 respond(HTTPResponse(status: 400, json: ["error": "需要 JSON，至少含 topic"])); return
             }
-            // 硬性关卡：对话里还没写正文就不收这条 notify，让 Claude 先把回复写出来
+            // 硬性关卡：对话里还没写正文就不收这条 notify，让 Claude 先把回复写出来（龙娘 / 演示通知不过关卡）
             let check: (@escaping (Int?) -> Void) -> Void = { [weak self] done in
-                if e.test == true { done(nil) } else { self?.replyLengthForCaller(of: e, completion: done) }
+                if e.test == true || e.resolvedAgent == .codex { done(nil) } else { self?.replyLengthForCaller(of: e, completion: done) }
             }
             check { [weak self] replyChars in
                 guard let self else { return }
