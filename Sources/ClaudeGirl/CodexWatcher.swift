@@ -33,6 +33,15 @@ final class CodexWatcher {
     private var threads: [String: ThreadInfo] = [:]     // 按文件路径
     private let startDate = Date().addingTimeInterval(-5)
     private var warnedCompressed = false
+    /// .jsonl.zst：记住上次解出来处理到了第几行、以及上次的文件大小
+    private var zstLines: [String: Int] = [:]
+    private var zstSizes: [String: UInt64] = [:]
+
+    /// zstd 命令行（新版 Codex 会把会话日志压成 .jsonl.zst）
+    private lazy var zstdPath: String? = {
+        for p in ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd", "/usr/bin/zstd", "/opt/local/bin/zstd"] where FileManager.default.isExecutableFile(atPath: p) { return p }
+        return nil
+    }()
 
     private let isoFrac: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -82,15 +91,14 @@ final class CodexWatcher {
             guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { continue }
             for f in items {
                 let name = f.lastPathComponent
+                guard name.hasPrefix("rollout-") else { continue }
+                let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
                 if name.hasSuffix(".jsonl.zst") {
-                    if !warnedCompressed {
-                        warnedCompressed = true
-                        Log.info("Codex 日志是 zstd 压缩的（\(name)），当前版本不支持读取")
-                    }
+                    if mtime < cutoff && zstLines[f.path] == nil { continue }
+                    readCompressed(f)
                     continue
                 }
-                guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { continue }
-                let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                guard name.hasSuffix(".jsonl") else { continue }
                 if mtime < cutoff && offsets[f.path] == nil { continue }
                 readNewLines(of: f)
             }
@@ -119,6 +127,38 @@ final class CodexWatcher {
         }
         remainders[key] = buf
         for l in lines where !l.isEmpty { handle(line: l, file: file) }
+    }
+
+    /// zstd 压缩的日志：大小变了就整个解一遍，只处理上次没处理过的行
+    private func readCompressed(_ file: URL) {
+        let key = file.path
+        let size = (try? FileManager.default.attributesOfItem(atPath: key)[.size] as? UInt64) ?? 0
+        if zstSizes[key] == size { return }
+        zstSizes[key] = size
+        guard let zstd = zstdPath else {
+            if !warnedCompressed {
+                warnedCompressed = true
+                Log.info("Codex 日志是 zstd 压缩的（\(file.lastPathComponent)），但没找到 zstd 命令：brew install zstd 后重启桌宠即可读取")
+            }
+            return
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: zstd)
+        proc.arguments = ["-dcq", key]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard !data.isEmpty else { return }
+        var lines = data.split(separator: 0x0A, omittingEmptySubsequences: true)
+        // 最后一行可能还没写完（流式压缩）：没有换行结尾就先不处理
+        if data.last != 0x0A, !lines.isEmpty { lines.removeLast() }
+        let done = zstLines[key] ?? 0
+        guard lines.count > done else { return }
+        for l in lines[done...] { handle(line: Data(l), file: file) }
+        zstLines[key] = lines.count
     }
 
     // MARK: 解析

@@ -125,6 +125,7 @@ MCP 的 notify 用来补充更好的摘要和「带选项的提问」；`notify`
 6. Codex 这边：app 每 2 秒读一次 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 新增的行，
    `task_started` → 工作中，`task_complete`（带 `last_agent_message`）→ 完成气泡，`turn_aborted` → 空闲；线程 ID 用来拼 `codex://threads/<id>`。
    龙娘的 notify 不过「正文关卡」（Codex 的回复在日志里，不需要防它把回复塞进通知）。
+   新版 Codex 会把日志压成 `.jsonl.zst`：装一下 `brew install zstd`，app 会用它解压读取。
 
 本地接口（只监听 127.0.0.1，端口 47333）：
 
