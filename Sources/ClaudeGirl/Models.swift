@@ -39,7 +39,7 @@ enum Agent: String, CaseIterable {
     /// 人物框尺寸（pt）
     var spriteSize: NSSize {
         switch self {
-        case .claude: return NSSize(width: 260, height: 180)
+        case .claude: return NSSize(width: 215, height: 149)   // 大小姐头大身宽，缩到约 0.83 倍才和龙娘差不多高
         case .codex: return NSSize(width: 150, height: 200)
         }
     }
