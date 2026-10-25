@@ -64,6 +64,10 @@ final class PetController: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .settingsChanged, object: nil)
         startRegistryPolling()
         startCodexWatcher()
+        Updater.shared.start()
+        NotificationCenter.default.addObserver(forName: .updaterBuilding, object: nil, queue: .main) { [weak self] n in
+            self?.windowController.showWhisper((n.object as? String) ?? "正在更新…")
+        }
 
         if !bridge.isTrusted {
             // 第一次启动顺手要一下权限；拒绝也不影响看通知
@@ -109,6 +113,7 @@ final class PetController: NSObject {
         codexWindow.setVisible(Settings.shared.showPet(.codex))
         codexWindow.walkingSettingChanged()
         if Settings.shared.watchCodex { startCodexWatcher() } else { codexWatcher?.stop(); codexWatcher = nil }
+        Updater.shared.schedule()
         recompute()
     }
 

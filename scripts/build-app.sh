@@ -48,6 +48,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# 记下仓库位置，app 里的「检查更新并重新编译」靠它找到 scripts/build-app.sh
+/usr/libexec/PlistBuddy -c "Add :ClaudeGirlRepoPath string $(pwd)" "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 
 # 签名：有「ClaudeGirl Dev」自签名证书（scripts/make-signing-cert.sh 生成）就用它，签名稳定、辅助功能权限不会失效；
 # 否则用临时签名，每次重新编译后都得重新授权。

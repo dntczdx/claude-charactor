@@ -70,6 +70,16 @@ final class Settings {
         }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }
+    /// 自动更新：定时检查 GitHub 分支，有新提交就 pull 并重新打包
+    var autoUpdate: Bool {
+        get { bool("autoUpdate", default: true) }
+        set { set(newValue, "autoUpdate") }
+    }
+    /// 仓库路径（Info.plist 里没有时的备选）
+    var repoPath: String? {
+        get { d.string(forKey: "repoPath") }
+        set { d.set(newValue, forKey: "repoPath") }
+    }
     /// 是否监听 Codex 会话日志
     var watchCodex: Bool {
         get { bool("watchCodex", default: true) }

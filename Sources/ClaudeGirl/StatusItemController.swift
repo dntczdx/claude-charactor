@@ -73,6 +73,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let dump = NSMenuItem(title: "导出 Claude 窗口结构（诊断）", action: #selector(dumpTree), keyEquivalent: "")
         dump.target = self
         menu.addItem(dump)
+        menu.addItem(.separator())
+        let upd = NSMenuItem(title: "检查更新并重新编译（GitHub → 本机）", action: #selector(updateNow), keyEquivalent: "")
+        upd.target = self
+        upd.isEnabled = Updater.shared.repoPath != nil
+        menu.addItem(upd)
+        menu.addItem(toggle("自动更新（每 10 分钟检查）", on: Settings.shared.autoUpdate, action: #selector(toggleAutoUpdate)))
+        let st = NSMenuItem(title: "上次检查：\(Updater.shared.lastResult)", action: nil, keyEquivalent: "")
+        st.isEnabled = false
+        menu.addItem(st)
+        let blog = NSMenuItem(title: "查看编译日志", action: #selector(openBuildLog), keyEquivalent: "")
+        blog.target = self
+        menu.addItem(blog)
+        menu.addItem(.separator())
         let reload = NSMenuItem(title: "重新载入动画素材", action: #selector(reloadAssets), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
@@ -116,6 +129,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func testBubble() { controller.injectTestEvent() }
     @objc private func requestAX() { controller.bridge.requestTrust() }
     @objc private func reloadAssets() { controller.reloadAssets() }
+    @objc private func updateNow() { Updater.shared.checkAndUpdate(force: true) }
+    @objc private func toggleAutoUpdate() { Settings.shared.autoUpdate.toggle() }
+    @objc private func openBuildLog() {
+        let url = Updater.shared.buildLogURL
+        if !FileManager.default.fileExists(atPath: url.path) { try? "（还没有编译记录）\n".write(to: url, atomically: true, encoding: .utf8) }
+        NSWorkspace.shared.open(url)
+    }
     @objc private func dumpTree() {
         controller.bridge.dumpTree { url in
             guard let url else { return }
