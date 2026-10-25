@@ -138,7 +138,7 @@ final class ClaudeBridge {
             // Codex 的窗口读不到对话 URL；codex://threads/<id> 本身就是精确跳转，
             // 这里只核对前台确实是 Codex（防止把答案打进别的 app），并记下窗口标题供排查
             let front = NSWorkspace.shared.frontmostApplication
-            let isCodex = front.map { app in bundleIDs.contains($0.bundleIdentifier ?? "") || $0.localizedName == self.agent.appName } ?? false
+            let isCodex = front.map { app in self.bundleIDs.contains(app.bundleIdentifier ?? "") || app.localizedName == self.agent.appName } ?? false
             Log.info("Codex 前台核对：front=\(front?.localizedName ?? "-") ok=\(isCodex) 窗口标题=\(str(window, kAXTitleAttribute) ?? "-")")
             return isCodex
         }
