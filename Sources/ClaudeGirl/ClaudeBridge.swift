@@ -134,6 +134,14 @@ final class ClaudeBridge {
 
     /// 前台是不是 chat 指向的那条对话：有 ID 就必须 ID 一致；只有标题就要求相似度 ≥ 0.85
     private func isAt(_ chat: ChatRef, window: AXUIElement) -> Bool {
+        if agent == .codex {
+            // Codex 的窗口读不到对话 URL；codex://threads/<id> 本身就是精确跳转，
+            // 这里只核对前台确实是 Codex（防止把答案打进别的 app），并记下窗口标题供排查
+            let front = NSWorkspace.shared.frontmostApplication
+            let isCodex = front.map { app in bundleIDs.contains($0.bundleIdentifier ?? "") || $0.localizedName == self.agent.appName } ?? false
+            Log.info("Codex 前台核对：front=\(front?.localizedName ?? "-") ok=\(isCodex) 窗口标题=\(str(window, kAXTitleAttribute) ?? "-")")
+            return isCodex
+        }
         if let id = chat.id {
             return currentChatID(window: window) == Self.normalizeID(id)
         }
