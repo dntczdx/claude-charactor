@@ -68,6 +68,26 @@ final class CodexWatcher {
         timer = nil
     }
 
+    // MARK: 对外：最近活跃的线程
+
+    /// 最近 `within` 秒内有写入的会话文件对应的线程（不解压，只看文件名和修改时间）。
+    /// MCP 的 notify 不知道自己来自哪条线程时，用它兜底。
+    func mostRecentThread(within: TimeInterval) -> (id: String, title: String)? {
+        var best: (URL, Date)?
+        let cutoff = Date().addingTimeInterval(-within)
+        for dir in sessionDirs() {
+            guard let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { continue }
+            for f in items where f.lastPathComponent.hasPrefix("rollout-") {
+                let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if m >= cutoff, m > (best?.1 ?? .distantPast) { best = (f, m) }
+            }
+        }
+        guard let (file, _) = best else { return nil }
+        let id = Self.idFromFilename(file)
+        let title = queue.sync { threads[file.path]?.title } ?? (file.deletingPathExtension().lastPathComponent)
+        return (id, title)
+    }
+
     // MARK: 扫描
 
     private func sessionDirs() -> [URL] {
@@ -244,7 +264,8 @@ final class CodexWatcher {
 
     /// rollout-2026-10-25T10-11-12-<uuid>.jsonl → uuid
     private static func idFromFilename(_ file: URL) -> String {
-        let stem = file.deletingPathExtension().lastPathComponent
+        var stem = file.deletingPathExtension().lastPathComponent
+        if stem.hasSuffix(".jsonl") { stem = String(stem.dropLast(".jsonl".count)) }
         // 去掉 "rollout-" 和时间戳（19 个字符 + 1 个连字符）
         let afterPrefix = stem.hasPrefix("rollout-") ? String(stem.dropFirst("rollout-".count)) : stem
         if afterPrefix.count > 20 {

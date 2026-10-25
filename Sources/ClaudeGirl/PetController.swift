@@ -248,10 +248,19 @@ final class PetController: NSObject {
     private func bindCodexNotify(_ c: Conversation) {
         let busy = conversations.filter { $0.agent == .codex && $0 !== c && ($0.state == .working || $0.state == .thinking) && $0.chatID != nil }
         let recent = conversations.filter { $0.agent == .codex && $0 !== c && $0.chatID != nil && Date().timeIntervalSince($0.updatedAt) < 20 }
-        guard let src = busy.first ?? recent.first else { return }
-        c.chatID = src.chatID
-        if c.sidebarTitle == nil { c.sidebarTitle = src.topic }
-        if src.requestId == nil { conversations.removeAll { $0 === src } }
+        if let src = busy.first ?? recent.first {
+            c.chatID = src.chatID
+            if c.sidebarTitle == nil { c.sidebarTitle = src.topic }
+            if src.requestId == nil { conversations.removeAll { $0 === src } }
+            return
+        }
+        // 日志没看到正在工作的线程（比如日志是 zst 而没装 zstd）：取最近 90 秒内有写入的那个会话文件
+        if let t = codexWatcher?.mostRecentThread(within: 90) {
+            c.chatID = t.id
+            Log.info("notify[codex] 按最近写入的会话文件绑定 thread=\(t.id.prefix(8))")
+        } else {
+            Log.info("notify[codex] 找不到对应线程：日志目录没有最近写入的文件（是否需要 brew install zstd？）")
+        }
     }
 
     private func codexConversation(_ t: CodexWatcher.ThreadInfo) -> Conversation {
